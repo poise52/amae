@@ -1,0 +1,118 @@
+use std::fs;
+use std::path::PathBuf;
+use directories::UserDirs;
+use sha1::{Sha1, Digest};
+use tar::Archive;
+use flate2::read::GzDecoder;
+
+pub struct Cas {
+    pub store_dir: PathBuf,
+    pub tmp_dir: PathBuf,
+}
+
+impl Cas {
+    pub fn new() -> Self {
+        let home = UserDirs::new()
+            .expect("Could not determine home directory")
+            .home_dir()
+            .to_path_buf();
+        
+        let amae_dir = home.join(".amae");
+        let store_dir = amae_dir.join("store");
+        let tmp_dir = amae_dir.join("tmp");
+
+        fs::create_dir_all(&store_dir).expect("Failed to create global store directory");
+        fs::create_dir_all(&tmp_dir).expect("Failed to create temporary directory");
+
+        Self { store_dir, tmp_dir }
+    }
+
+    pub fn package_dir(&self, name: &str, version: &str) -> PathBuf {
+        let escaped_name = name.replace('/', "+");
+        self.store_dir.join(format!("{}@{}", escaped_name, version))
+    }
+
+    pub async fn download_and_extract(
+        &self,
+        client: &reqwest::Client,
+        name: &str,
+        version: &str,
+        tarball_url: &str,
+        expected_shasum: &str,
+    ) -> Result<PathBuf, String> {
+        let dest_dir = self.package_dir(name, version);
+        
+        if dest_dir.exists() {
+            return Ok(dest_dir);
+        }
+
+        let response = client.get(tarball_url)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to download tarball: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(format!("Failed to download package: HTTP status {}", response.status()));
+        }
+
+        let bytes = response.bytes()
+            .await
+            .map_err(|e| format!("Failed to read response bytes: {}", e))?;
+
+        let mut hasher = Sha1::new();
+        hasher.update(&bytes);
+        let shasum = format!("{:x}", hasher.finalize());
+        if shasum != expected_shasum {
+            return Err(format!(
+                "Integrity check failed for {}. Expected shasum {}, got {}",
+                name, expected_shasum, shasum
+            ));
+        }
+
+        let temp_extract_dir = tempfile::Builder::new()
+            .prefix("amae-extract-")
+            .tempdir_in(&self.tmp_dir)
+            .map_err(|e| format!("Failed to create temp extract directory: {}", e))?;
+
+        let tar = GzDecoder::new(&bytes[..]);
+        let mut archive = Archive::new(tar);
+        
+        archive.unpack(temp_extract_dir.path())
+            .map_err(|e| format!("Failed to unpack tarball: {}", e))?;
+
+        let entries = fs::read_dir(temp_extract_dir.path())
+            .map_err(|e| format!("Failed to read temp extract directory: {}", e))?;
+
+        let mut npm_package_dir = None;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+            let path = entry.path();
+            if path.is_dir() {
+                npm_package_dir = Some(path);
+                break;
+            }
+        }
+
+        let npm_package_dir = match npm_package_dir {
+            Some(dir) => dir,
+            None => {
+                return Err(format!(
+                    "Invalid package tarball format for {}: no directory found in archive", name
+                ));
+            }
+        };
+
+        if !dest_dir.exists() {
+            fs::create_dir_all(dest_dir.parent().unwrap())
+                .map_err(|e| format!("Failed to create parent dir: {}", e))?;
+            
+            if let Err(e) = fs::rename(&npm_package_dir, &dest_dir) {
+                if !dest_dir.exists() {
+                    return Err(format!("Failed to move extracted package to store: {}", e));
+                }
+            }
+        }
+
+        Ok(dest_dir)
+    }
+}
