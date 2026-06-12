@@ -71,7 +71,7 @@ function generatePlatformPackages() {
 }
 
 function generateMainPackage() {
-  const mainDir = path.join(__dirname, '..', 'npm', 'amae');
+  const mainDir = path.join(__dirname, '..', 'npm', 'amae-cli');
   const binDir = path.join(mainDir, 'bin');
   ensureDir(binDir);
 
@@ -81,12 +81,14 @@ function generateMainPackage() {
   }
 
   const pkgJson = {
-    name: 'amae',
+    name: 'amae-cli',
     version: version,
-    description: 'Ultra-fast package manager for JS/TS',
+    description: 'Ultra-fast package manager for JS/TS written in Rust',
     bin: {
       amae: 'bin/amae'
     },
+    keywords: ['package-manager', 'npm', 'rust', 'fast'],
+    license: 'MIT',
     optionalDependencies: optionalDependencies
   };
 
