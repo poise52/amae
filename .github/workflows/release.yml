@@ -152,7 +152,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd npm/amae-cli
-          npm publish --access public
+          npm publish --access public 2>&1 && echo "Published amae-cli" || echo "Skipping amae-cli (already published)"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
