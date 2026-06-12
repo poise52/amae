@@ -52,6 +52,36 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Test => {
+            if let Err(e) = handle_run(&project_dir, "test").await {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Start => {
+            if let Err(e) = handle_run(&project_dir, "start").await {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Clean => {
+            if let Err(e) = handle_clean(&project_dir) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::List => {
+            if let Err(e) = handle_list(&project_dir) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Prune => {
+            if let Err(e) = handle_prune() {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
     }
 }
 
@@ -342,6 +372,91 @@ async fn handle_run(project_dir: &Path, script_name: &str) -> Result<(), String>
         std::process::exit(status.code().unwrap_or(1));
     }
 
+    Ok(())
+}
+
+fn handle_clean(project_dir: &Path) -> Result<(), String> {
+    let node_modules = project_dir.join("node_modules");
+    if node_modules.exists() {
+        println!("Cleaning node_modules...");
+        std::fs::remove_dir_all(&node_modules).map_err(|e| format!("Failed to remove node_modules: {}", e))?;
+    }
+    let lock_path = project_dir.join("amae-lock.bin");
+    if lock_path.exists() {
+        println!("Cleaning amae-lock.bin...");
+        std::fs::remove_file(&lock_path).map_err(|e| format!("Failed to remove lockfile: {}", e))?;
+    }
+    println!("Cleaned project directories successfully.");
+    Ok(())
+}
+
+fn handle_list(project_dir: &Path) -> Result<(), String> {
+    let pkg = PackageJson::read_from_dir(project_dir)?;
+    let name = pkg.name.unwrap_or_else(|| "unnamed".to_string());
+    let version = pkg.version.unwrap_or_else(|| "0.0.0".to_string());
+    println!("{}@{} {}", name, version, project_dir.display());
+
+    let lock_path = project_dir.join("amae-lock.bin");
+    let resolved_map = if lock_path.exists() {
+        match Lockfile::read_from_file(&lock_path) {
+            Ok(lock) => Some(lock.packages),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
+    let list_deps = |deps: &BTreeMap<String, String>, is_dev: bool| {
+        for (dep_name, dep_range) in deps {
+            let actual_ver = if let Some(ref map) = resolved_map {
+                let key_prefix = format!("{}@", dep_name);
+                let found = map.keys().find(|k| k.starts_with(&key_prefix));
+                if let Some(key) = found {
+                    map.get(key).map(|p| p.version.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some(ver) = actual_ver {
+                println!("├── {}@{} (resolved to {}){}", dep_name, dep_range, ver, if is_dev { " [dev]" } else { "" });
+            } else {
+                println!("├── {}@{}{}", dep_name, dep_range, if is_dev { " [dev]" } else { "" });
+            }
+        }
+    };
+
+    list_deps(&pkg.dependencies, false);
+    list_deps(&pkg.dev_dependencies, true);
+
+    Ok(())
+}
+
+fn handle_prune() -> Result<(), String> {
+    let cas = cas::Cas::new();
+    println!("Pruning global store at {}...", cas.store_dir.display());
+
+    #[cfg(unix)]
+    {
+        let mut child = std::process::Command::new("chmod")
+            .arg("-R")
+            .arg("u+w")
+            .arg(&cas.store_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to chmod store: {}", e))?;
+        let _ = child.wait();
+    }
+
+    if cas.store_dir.exists() {
+        std::fs::remove_dir_all(&cas.store_dir)
+            .map_err(|e| format!("Failed to delete global store: {}", e))?;
+    }
+    std::fs::create_dir_all(&cas.store_dir)
+        .map_err(|e| format!("Failed to recreate global store: {}", e))?;
+
+    println!("Successfully pruned global CAS store.");
     Ok(())
 }
 

@@ -37,4 +37,19 @@ pub enum Commands {
         /// Name of the script to run (e.g. dev)
         script: String,
     },
+
+    /// Run the test script defined in package.json
+    Test,
+
+    /// Run the start script defined in package.json
+    Start,
+
+    /// Clean local node_modules and lockfile
+    Clean,
+
+    /// List installed dependencies
+    List,
+
+    /// Prune global CAS store
+    Prune,
 }
