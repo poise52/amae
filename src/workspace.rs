@@ -5,7 +5,6 @@ use crate::package::PackageJson;
 
 #[derive(Debug, Clone, Default)]
 pub struct WorkspacePackage {
-    pub name: String,
     pub version: String,
     pub path: PathBuf,
     pub dependencies: BTreeMap<String, String>,
@@ -14,14 +13,12 @@ pub struct WorkspacePackage {
 
 #[derive(Debug, Clone, Default)]
 pub struct Workspace {
-    pub root_dir: PathBuf,
     pub members: HashMap<String, WorkspacePackage>,
 }
 
 impl Workspace {
     pub fn load(root: &Path) -> Self {
         let mut workspace = Workspace {
-            root_dir: root.to_path_buf(),
             members: HashMap::new(),
         };
 
@@ -133,8 +130,7 @@ fn scan_workspace(root: &Path, patterns: &[String]) -> HashMap<String, Workspace
             if base_dir.exists() && base_dir.is_dir() {
                 if let Ok(pkg_json) = PackageJson::read_from_dir(&base_dir) {
                     if let (Some(name), Some(version)) = (pkg_json.name, pkg_json.version) {
-                        members.insert(name.clone(), WorkspacePackage {
-                            name,
+                        members.insert(name, WorkspacePackage {
                             version,
                             path: base_dir.clone(),
                             dependencies: pkg_json.dependencies,
@@ -161,8 +157,7 @@ fn scan_dir_recursive(dir: &Path, recursive: bool, depth: usize, members: &mut H
                     if pkg_json_path.exists() {
                         if let Ok(pkg_json) = PackageJson::read_from_dir(&path) {
                             if let (Some(name), Some(version)) = (pkg_json.name, pkg_json.version) {
-                                members.insert(name.clone(), WorkspacePackage {
-                                    name,
+                                members.insert(name, WorkspacePackage {
                                     version,
                                     path: path.clone(),
                                     dependencies: pkg_json.dependencies,
