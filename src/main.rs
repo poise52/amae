@@ -4,6 +4,7 @@ mod resolver;
 mod cas;
 mod linker;
 mod lock;
+mod npmrc;
 
 use clap::Parser;
 use cli::{Cli, Commands};
@@ -77,6 +78,7 @@ fn handle_init(project_dir: &Path) -> Result<(), String> {
 async fn handle_install(project_dir: &Path) -> Result<(), String> {
     let pkg = PackageJson::read_from_dir(project_dir)?;
     let lock_path = project_dir.join("amae-lock.bin");
+    let npmrc = Arc::new(npmrc::Npmrc::load());
 
     let mut direct_deps = BTreeMap::new();
     for (k, v) in pkg.dependencies.iter() {
@@ -109,13 +111,13 @@ async fn handle_install(project_dir: &Path) -> Result<(), String> {
             resolved_packages = lockfile.packages.into_iter().collect();
         } else {
             println!("Lockfile out of date. Resolving dependencies...");
-            resolved_packages = run_resolver(&direct_deps).await?;
+            resolved_packages = run_resolver(&direct_deps, npmrc.clone()).await?;
             let lockfile = Lockfile::new(direct_deps.clone(), resolved_packages.clone());
             lockfile.write_to_file(&lock_path)?;
         }
     } else {
         println!("Resolving dependencies...");
-        resolved_packages = run_resolver(&direct_deps).await?;
+        resolved_packages = run_resolver(&direct_deps, npmrc.clone()).await?;
         let lockfile = Lockfile::new(direct_deps.clone(), resolved_packages.clone());
         lockfile.write_to_file(&lock_path)?;
     }
@@ -128,13 +130,14 @@ async fn handle_install(project_dir: &Path) -> Result<(), String> {
     for pkg in resolved_packages.values() {
         let cas_clone = cas.clone();
         let client_clone = client.clone();
+        let npmrc_clone = npmrc.clone();
         let name = pkg.name.clone();
         let version = pkg.version.clone();
         let tarball_url = pkg.tarball_url.clone();
         let shasum = pkg.shasum.clone();
 
         download_handles.push(tokio::spawn(async move {
-            cas_clone.download_and_extract(&client_clone, &name, &version, &tarball_url, &shasum).await
+            cas_clone.download_and_extract(&client_clone, &npmrc_clone, &name, &version, &tarball_url, &shasum).await
         }));
     }
 
@@ -163,12 +166,16 @@ async fn handle_install(project_dir: &Path) -> Result<(), String> {
     }
 
     linker.link(&resolved_packages, &direct_resolved)?;
+    linker.run_lifecycle_scripts(&resolved_packages, &direct_resolved)?;
     println!("Successfully installed dependencies.");
     Ok(())
 }
 
-async fn run_resolver(direct_deps: &BTreeMap<String, String>) -> Result<HashMap<String, resolver::ResolvedPackage>, String> {
-    let resolver = Resolver::new();
+async fn run_resolver(
+    direct_deps: &BTreeMap<String, String>,
+    npmrc: Arc<npmrc::Npmrc>,
+) -> Result<HashMap<String, resolver::ResolvedPackage>, String> {
+    let resolver = Resolver::new(npmrc);
     let mut resolve_handles = Vec::new();
 
     for (name, range) in direct_deps {
@@ -213,10 +220,16 @@ async fn handle_add(project_dir: &Path, package_name: &str, dev: bool) -> Result
         (format!("@{}", parts[1]), parts[2].to_string())
     } else {
         let url_encoded_name = package_name.replace('/', "%2f");
+        let npmrc = npmrc::Npmrc::load();
+        let registry = &npmrc.registry;
+        let url = format!("{}/{}", registry.trim_end_matches('/'), url_encoded_name);
         let client = reqwest::Client::new();
-        let response = client.get(&format!("https://registry.npmjs.org/{}", url_encoded_name))
-            .header("Accept", "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8")
-            .send()
+        let mut req = client.get(&url)
+            .header("Accept", "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8");
+        if let Some(token) = npmrc.get_token(&url) {
+            req = req.header("Authorization", format!("Bearer {}", token));
+        }
+        let response = req.send()
             .await
             .map_err(|e| format!("Failed to connect to registry: {}", e))?;
 

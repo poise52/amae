@@ -216,6 +216,183 @@ impl Linker {
         }
         Ok(())
     }
+
+    pub fn run_lifecycle_scripts(
+        &self,
+        resolved_graph: &HashMap<String, ResolvedPackage>,
+        direct_deps: &[(String, String)],
+    ) -> Result<(), String> {
+        let order = self.get_build_order(resolved_graph, direct_deps);
+        for key in order {
+            if let Some(pkg) = resolved_graph.get(&key) {
+                let pkg_store_dir = self.local_package_store_dir(&pkg.name, &pkg.version);
+                let pkg_json = match crate::package::PackageJson::read_from_dir(&pkg_store_dir) {
+                    Ok(json) => json,
+                    Err(_) => continue,
+                };
+
+                let mut scripts_to_run = Vec::new();
+                if let Some(pre) = pkg_json.scripts.get("preinstall") {
+                    scripts_to_run.push(("preinstall", pre.clone()));
+                }
+                if let Some(ins) = pkg_json.scripts.get("install") {
+                    scripts_to_run.push(("install", ins.clone()));
+                } else if pkg_store_dir.join("binding.gyp").exists() {
+                    scripts_to_run.push(("install", "node-gyp rebuild".to_string()));
+                }
+                if let Some(post) = pkg_json.scripts.get("postinstall") {
+                    scripts_to_run.push(("postinstall", post.clone()));
+                }
+
+                if scripts_to_run.is_empty() {
+                    continue;
+                }
+
+                println!("Running lifecycle scripts for {}@{}...", pkg.name, pkg.version);
+
+                let pkg_bin_dir = self.local_pkg_node_modules_dir(&pkg.name, &pkg.version).join(".bin");
+                let root_bin_dir = self.node_modules_dir.join(".bin");
+                let path_val = std::env::var_os("PATH").unwrap_or_default();
+
+                let mut path_list = Vec::new();
+                if pkg_bin_dir.exists() {
+                    path_list.push(pkg_bin_dir);
+                }
+                if root_bin_dir.exists() {
+                    path_list.push(root_bin_dir);
+                }
+                if !path_val.is_empty() {
+                    path_list.extend(std::env::split_paths(&path_val));
+                }
+                let new_path = std::env::join_paths(path_list)
+                    .map_err(|e| format!("Failed to join PATH: {}", e))?;
+
+                for (name, script) in scripts_to_run {
+                    println!("  > {} ({}): {}", pkg.name, name, script);
+
+                    #[cfg(unix)]
+                    let mut child = std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(&script)
+                        .env("PATH", &new_path)
+                        .current_dir(&pkg_store_dir)
+                        .spawn()
+                        .map_err(|e| format!("Failed to run script '{}' for {}: {}", script, pkg.name, e))?;
+
+                    #[cfg(windows)]
+                    let mut child = std::process::Command::new("cmd")
+                        .arg("/C")
+                        .arg(&script)
+                        .env("PATH", &new_path)
+                        .current_dir(&pkg_store_dir)
+                        .spawn()
+                        .map_err(|e| format!("Failed to run script '{}' for {}: {}", script, pkg.name, e))?;
+
+                    let status = child.wait().map_err(|e| format!("Failed to wait for script '{}': {}", script, e))?;
+                    if !status.success() {
+                        return Err(format!("Lifecycle script '{}' failed for {}@{} with exit code {:?}", script, pkg.name, pkg.version, status.code()));
+                    }
+                }
+            }
+        }
+
+        let root_dir = self.node_modules_dir.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let root_pkg_json = match crate::package::PackageJson::read_from_dir(&root_dir) {
+            Ok(json) => json,
+            Err(_) => return Ok(()),
+        };
+
+        let mut root_scripts = Vec::new();
+        if let Some(pre) = root_pkg_json.scripts.get("preinstall") {
+            root_scripts.push(("preinstall", pre.clone()));
+        }
+        if let Some(ins) = root_pkg_json.scripts.get("install") {
+            root_scripts.push(("install", ins.clone()));
+        }
+        if let Some(post) = root_pkg_json.scripts.get("postinstall") {
+            root_scripts.push(("postinstall", post.clone()));
+        }
+
+        if !root_scripts.is_empty() {
+            println!("Running root lifecycle scripts...");
+            let root_bin_dir = self.node_modules_dir.join(".bin");
+            let path_val = std::env::var_os("PATH").unwrap_or_default();
+            let mut path_list = Vec::new();
+            if root_bin_dir.exists() {
+                path_list.push(root_bin_dir);
+            }
+            if !path_val.is_empty() {
+                path_list.extend(std::env::split_paths(&path_val));
+            }
+            let new_path = std::env::join_paths(path_list)
+                .map_err(|e| format!("Failed to join PATH: {}", e))?;
+
+            for (name, script) in root_scripts {
+                println!("  > root ({}): {}", name, script);
+
+                #[cfg(unix)]
+                let mut child = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&script)
+                    .env("PATH", &new_path)
+                    .current_dir(&root_dir)
+                    .spawn()
+                    .map_err(|e| format!("Failed to run root script '{}': {}", script, e))?;
+
+                #[cfg(windows)]
+                let mut child = std::process::Command::new("cmd")
+                    .arg("/C")
+                    .arg(&script)
+                    .env("PATH", &new_path)
+                    .current_dir(&root_dir)
+                    .spawn()
+                    .map_err(|e| format!("Failed to run root script '{}': {}", script, e))?;
+
+                let status = child.wait().map_err(|e| format!("Failed to wait for root script '{}': {}", script, e))?;
+                if !status.success() {
+                    return Err(format!("Root lifecycle script '{}' failed with exit status {:?}", script, status));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn get_build_order(
+        &self,
+        resolved_graph: &HashMap<String, ResolvedPackage>,
+        direct_deps: &[(String, String)],
+    ) -> Vec<String> {
+        let mut order = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+
+        fn visit(
+            key: &str,
+            resolved_graph: &HashMap<String, ResolvedPackage>,
+            visited: &mut std::collections::HashSet<String>,
+            order: &mut Vec<String>,
+        ) {
+            if visited.contains(key) {
+                return;
+            }
+            visited.insert(key.to_string());
+
+            if let Some(pkg) = resolved_graph.get(key) {
+                for (dep_name, dep_version) in &pkg.dependencies {
+                    let dep_key = format!("{}@{}", dep_name, dep_version);
+                    visit(&dep_key, resolved_graph, visited, order);
+                }
+            }
+            order.push(key.to_string());
+        }
+
+        for (name, version) in direct_deps {
+            let key = format!("{}@{}", name, version);
+            visit(&key, resolved_graph, &mut visited, &mut order);
+        }
+
+        order
+    }
 }
 
 fn create_symlink(target: &Path, link: &Path) -> std::io::Result<()> {

@@ -35,6 +35,7 @@ impl Cas {
     pub async fn download_and_extract(
         &self,
         client: &reqwest::Client,
+        npmrc: &crate::npmrc::Npmrc,
         name: &str,
         version: &str,
         tarball_url: &str,
@@ -46,8 +47,12 @@ impl Cas {
             return Ok(dest_dir);
         }
 
-        let response = client.get(tarball_url)
-            .send()
+        let mut req = client.get(tarball_url);
+        if let Some(token) = npmrc.get_token(tarball_url) {
+            req = req.header("Authorization", format!("Bearer {}", token));
+        }
+
+        let response = req.send()
             .await
             .map_err(|e| format!("Failed to download tarball: {}", e))?;
 
@@ -111,8 +116,58 @@ impl Cas {
                     return Err(format!("Failed to move extracted package to store: {}", e));
                 }
             }
+
+            if let Err(e) = make_dir_read_only(&dest_dir) {
+                return Err(format!("Failed to make package store directory read-only: {}", e));
+            }
         }
 
         Ok(dest_dir)
     }
+}
+
+fn make_dir_read_only(dir: &std::path::Path) -> std::io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = entry.metadata()?;
+        let mut perms = metadata.permissions();
+
+        if metadata.is_dir() {
+            make_dir_read_only(&path)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = perms.mode();
+                perms.set_mode((mode & !0o222) | 0o111);
+            }
+            #[cfg(not(unix))]
+            perms.set_readonly(true);
+            fs::set_permissions(&path, perms)?;
+        } else {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = perms.mode();
+                perms.set_mode(mode & !0o222);
+            }
+            #[cfg(not(unix))]
+            perms.set_readonly(true);
+            fs::set_permissions(&path, perms)?;
+        }
+    }
+
+    let metadata = fs::metadata(dir)?;
+    let mut perms = metadata.permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = perms.mode();
+        perms.set_mode((mode & !0o222) | 0o111);
+    }
+    #[cfg(not(unix))]
+    perms.set_readonly(true);
+    fs::set_permissions(dir, perms)?;
+
+    Ok(())
 }

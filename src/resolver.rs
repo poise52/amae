@@ -44,6 +44,7 @@ pub struct ResolvedPackage {
 
 pub struct Resolver {
     client: reqwest::Client,
+    npmrc: Arc<crate::npmrc::Npmrc>,
     metadata_cache: Arc<RwLock<HashMap<String, Arc<RegistryPackage>>>>,
     pub resolved_graph: Arc<RwLock<HashMap<String, ResolvedPackage>>>,
 }
@@ -52,6 +53,7 @@ impl Clone for Resolver {
     fn clone(&self) -> Self {
         Self {
             client: self.client.clone(),
+            npmrc: self.npmrc.clone(),
             metadata_cache: self.metadata_cache.clone(),
             resolved_graph: self.resolved_graph.clone(),
         }
@@ -59,7 +61,7 @@ impl Clone for Resolver {
 }
 
 impl Resolver {
-    pub fn new() -> Self {
+    pub fn new(npmrc: Arc<crate::npmrc::Npmrc>) -> Self {
         let mut headers = HeaderMap::new();
         headers.insert(
             ACCEPT,
@@ -73,6 +75,7 @@ impl Resolver {
 
         Self {
             client,
+            npmrc,
             metadata_cache: Arc::new(RwLock::new(HashMap::new())),
             resolved_graph: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -140,6 +143,7 @@ impl Resolver {
 
     async fn fetch_package_metadata(
         client: reqwest::Client,
+        npmrc: Arc<crate::npmrc::Npmrc>,
         metadata_cache: Arc<RwLock<HashMap<String, Arc<RegistryPackage>>>>,
         name: String,
     ) -> Result<Arc<RegistryPackage>, String> {
@@ -150,10 +154,15 @@ impl Resolver {
         }
 
         let url_encoded_name = name.replace('/', "%2f");
-        let url = format!("https://registry.npmjs.org/{}", url_encoded_name);
+        let registry = &npmrc.registry;
+        let url = format!("{}/{}", registry.trim_end_matches('/'), url_encoded_name);
 
-        let response = client.get(&url)
-            .send()
+        let mut req = client.get(&url);
+        if let Some(token) = npmrc.get_token(&url) {
+            req = req.header("Authorization", format!("Bearer {}", token));
+        }
+
+        let response = req.send()
             .await
             .map_err(|e| format!("Network error fetching {}: {}", name, e))?;
 
@@ -178,6 +187,7 @@ impl Resolver {
         Box::pin(async move {
             let metadata = Self::fetch_package_metadata(
                 self.client.clone(),
+                self.npmrc.clone(),
                 self.metadata_cache.clone(),
                 name.clone(),
             ).await?;
