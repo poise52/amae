@@ -1,0 +1,58 @@
+#!/usr/bin/env node
+
+const fs = require('fs');
+const path = require('path');
+const spawn = require('child_process').spawnSync;
+
+const platform = process.platform;
+const arch = process.arch;
+
+const packageMap = {
+  'darwin-arm64': 'amae-darwin-arm64',
+  'darwin-x64': 'amae-darwin-x64',
+  'linux-x64': 'amae-linux-x64',
+  'win32-x64': 'amae-win32-x64'
+};
+
+const key = `${platform}-${arch}`;
+const pkgName = packageMap[key];
+
+if (!pkgName) {
+  console.error(`Unsupported platform/architecture: ${key}`);
+  process.exit(1);
+}
+
+let binName = platform === 'win32' ? 'amae.exe' : 'amae';
+let binPath = '';
+
+try {
+  binPath = require.resolve(`${pkgName}/bin/${binName}`);
+} catch (e) {
+  const localPaths = [
+    path.join(__dirname, '..', 'node_modules', pkgName, 'bin', binName),
+    path.join(__dirname, '..', '..', pkgName, 'bin', binName)
+  ];
+  for (const p of localPaths) {
+    if (fs.existsSync(p)) {
+      binPath = p;
+      break;
+    }
+  }
+}
+
+if (!binPath || !fs.existsSync(binPath)) {
+  console.error(`Binary not found for ${pkgName}. Try reinstalling.`);
+  process.exit(1);
+}
+
+const result = spawn(binPath, process.argv.slice(2), {
+  stdio: 'inherit',
+  windowsHide: true
+});
+
+if (result.error) {
+  console.error('Failed to run binary:', result.error);
+  process.exit(1);
+}
+
+process.exit(result.status ?? 0);

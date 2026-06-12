@@ -1,0 +1,14 @@
+{
+  "name": "amae-win32-x64",
+  "version": "0.1.0",
+  "description": "Platform-specific binary for amae-win32-x64",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "bin": {
+    "amae-win32-x64": "bin/amae.exe"
+  }
+}

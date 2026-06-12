@@ -1,0 +1,14 @@
+{
+  "name": "amae-darwin-x64",
+  "version": "0.1.0",
+  "description": "Platform-specific binary for amae-darwin-x64",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "bin": {
+    "amae-darwin-x64": "bin/amae"
+  }
+}

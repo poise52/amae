@@ -1,0 +1,14 @@
+{
+  "name": "amae",
+  "version": "0.1.0",
+  "description": "Ultra-fast package manager for JS/TS",
+  "bin": {
+    "amae": "bin/amae"
+  },
+  "optionalDependencies": {
+    "amae-darwin-arm64": "file:../amae-darwin-arm64",
+    "amae-darwin-x64": "file:../amae-darwin-x64",
+    "amae-linux-x64": "file:../amae-linux-x64",
+    "amae-win32-x64": "file:../amae-win32-x64"
+  }
+}
