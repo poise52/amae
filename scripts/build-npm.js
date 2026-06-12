@@ -4,6 +4,7 @@ const execSync = require('child_process').execSync;
 
 const version = '0.1.0';
 const localMode = process.argv.includes('--local');
+const skipBuild = process.argv.includes('--skip-build');
 
 const platformPackages = [
   { name: 'amae-darwin-arm64', os: 'darwin', cpu: 'arm64', binary: 'amae' },
@@ -13,6 +14,10 @@ const platformPackages = [
 ];
 
 function buildRust() {
+  if (skipBuild) {
+    console.log('Skipping Rust build (--skip-build flag set).');
+    return;
+  }
   console.log('Building rust release binary...');
   execSync('cargo build --release', { stdio: 'inherit' });
 }
