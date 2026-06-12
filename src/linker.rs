@@ -1,20 +1,23 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::collections::{HashMap, BTreeMap};
+use std::sync::Arc;
 use crate::resolver::ResolvedPackage;
 
 pub struct Linker {
     node_modules_dir: PathBuf,
     store_dir: PathBuf,
+    workspace: Arc<crate::workspace::Workspace>,
 }
 
 impl Linker {
-    pub fn new<P: AsRef<Path>>(project_root: P) -> Self {
+    pub fn new<P: AsRef<Path>>(project_root: P, workspace: Arc<crate::workspace::Workspace>) -> Self {
         let node_modules_dir = project_root.as_ref().join("node_modules");
         let store_dir = node_modules_dir.join(".store");
         Self {
             node_modules_dir,
             store_dir,
+            workspace,
         }
     }
 
@@ -33,6 +36,9 @@ impl Linker {
     ) -> Result<(), String> {
         let cas = crate::cas::Cas::new();
         for (_, pkg) in resolved_graph.iter() {
+            if pkg.tarball_url.starts_with("workspace:") {
+                continue;
+            }
             let global_pkg_dir = cas.package_dir(&pkg.name, &pkg.version);
             let local_pkg_store_dir = self.local_package_store_dir(&pkg.name, &pkg.version);
             
@@ -45,10 +51,14 @@ impl Linker {
         }
 
         for (_, pkg) in resolved_graph.iter() {
-            let local_pkg_node_modules = self.local_pkg_node_modules_dir(&pkg.name, &pkg.version);
+            let local_pkg_node_modules = if pkg.tarball_url.starts_with("workspace:") {
+                let ws_path = Path::new(&pkg.tarball_url["workspace:".len()..]);
+                ws_path.join("node_modules")
+            } else {
+                self.local_pkg_node_modules_dir(&pkg.name, &pkg.version)
+            };
 
             for (dep_name, dep_version) in pkg.dependencies.iter() {
-                let escaped_dep = dep_name.replace('/', "+");
                 let dep_symlink_path = local_pkg_node_modules.join(dep_name);
                 
                 if let Some(parent) = dep_symlink_path.parent() {
@@ -61,17 +71,18 @@ impl Linker {
                     let _ = fs::remove_dir_all(&dep_symlink_path);
                 }
 
-                let relative_target = if dep_name.contains('/') {
-                    PathBuf::from(format!(
-                        "../../../{}@{}/node_modules/{}",
-                        escaped_dep, dep_version, dep_name
-                    ))
+                let target_path = if let Some(dep_pkg) = resolved_graph.get(&format!("{}@{}", dep_name, dep_version)) {
+                    if dep_pkg.tarball_url.starts_with("workspace:") {
+                        PathBuf::from(&dep_pkg.tarball_url["workspace:".len()..])
+                    } else {
+                        self.local_package_store_dir(dep_name, dep_version)
+                    }
                 } else {
-                    PathBuf::from(format!(
-                        "../../{}@{}/node_modules/{}",
-                        escaped_dep, dep_version, dep_name
-                    ))
+                    self.local_package_store_dir(dep_name, dep_version)
                 };
+
+                let relative_target = get_relative_path(dep_symlink_path.parent().unwrap(), &target_path)
+                    .ok_or_else(|| format!("Could not compute relative path from {} to {}", dep_symlink_path.parent().unwrap().display(), target_path.display()))?;
 
                 create_symlink(&relative_target, &dep_symlink_path)
                     .map_err(|e| format!("Failed to create symlink for dependency {} -> {}: {}", dep_name, relative_target.display(), e))?;
@@ -79,7 +90,6 @@ impl Linker {
         }
 
         for (name, version) in direct_deps {
-            let escaped_name = name.replace('/', "+");
             let symlink_path = self.node_modules_dir.join(name);
 
             if let Some(parent) = symlink_path.parent() {
@@ -92,31 +102,37 @@ impl Linker {
                 let _ = fs::remove_dir_all(&symlink_path);
             }
 
-            let relative_target = if name.contains('/') {
-                PathBuf::from(format!(
-                    "../.store/{}@{}/node_modules/{}",
-                    escaped_name, version, name
-                ))
+            let target_path = if let Some(dep_pkg) = resolved_graph.get(&format!("{}@{}", name, version)) {
+                if dep_pkg.tarball_url.starts_with("workspace:") {
+                    PathBuf::from(&dep_pkg.tarball_url["workspace:".len()..])
+                } else {
+                    self.local_package_store_dir(name, version)
+                }
             } else {
-                PathBuf::from(format!(
-                    ".store/{}@{}/node_modules/{}",
-                    escaped_name, version, name
-                ))
+                self.local_package_store_dir(name, version)
             };
+
+            let relative_target = get_relative_path(symlink_path.parent().unwrap(), &target_path)
+                .ok_or_else(|| format!("Could not compute relative path from {} to {}", symlink_path.parent().unwrap().display(), target_path.display()))?;
 
             create_symlink(&relative_target, &symlink_path)
                 .map_err(|e| format!("Failed to create direct symlink for {}: {}", name, e))?;
         }
 
         for (_, pkg) in resolved_graph.iter() {
-            let local_pkg_node_modules = self.local_pkg_node_modules_dir(&pkg.name, &pkg.version);
+            let local_pkg_node_modules = if pkg.tarball_url.starts_with("workspace:") {
+                let ws_path = Path::new(&pkg.tarball_url["workspace:".len()..]);
+                ws_path.join("node_modules")
+            } else {
+                self.local_pkg_node_modules_dir(&pkg.name, &pkg.version)
+            };
             let deps_list: Vec<(String, String)> = pkg.dependencies.iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
-            self.link_binaries(&local_pkg_node_modules, &deps_list)?;
+            self.link_binaries(&local_pkg_node_modules, &deps_list, resolved_graph)?;
         }
 
-        self.link_binaries(&self.node_modules_dir, direct_deps)?;
+        self.link_binaries(&self.node_modules_dir, direct_deps, resolved_graph)?;
 
         Ok(())
     }
@@ -125,12 +141,20 @@ impl Linker {
         &self,
         base_node_modules: &Path,
         dependencies: &[(String, String)],
+        resolved_graph: &HashMap<String, ResolvedPackage>,
     ) -> Result<(), String> {
         let bin_dir = base_node_modules.join(".bin");
         
         for (dep_name, dep_version) in dependencies {
-            let escaped_dep = dep_name.replace('/', "+");
-            let dep_store_dir = self.local_package_store_dir(dep_name, dep_version);
+            let dep_store_dir = if let Some(dep_pkg) = resolved_graph.get(&format!("{}@{}", dep_name, dep_version)) {
+                if dep_pkg.tarball_url.starts_with("workspace:") {
+                    PathBuf::from(&dep_pkg.tarball_url["workspace:".len()..])
+                } else {
+                    self.local_package_store_dir(dep_name, dep_version)
+                }
+            } else {
+                self.local_package_store_dir(dep_name, dep_version)
+            };
             let pkg_json_path = dep_store_dir.join("package.json");
             
             if !pkg_json_path.exists() {
@@ -163,10 +187,9 @@ impl Linker {
                         let _ = fs::remove_file(&symlink_path);
                     }
 
-                    let relative_target = PathBuf::from(format!(
-                        "../.store/{}@{}/node_modules/{}/{}",
-                        escaped_dep, dep_version, dep_name, bin_rel_path
-                    ));
+                    let target_path = dep_store_dir.join(&bin_rel_path);
+                    let relative_target = get_relative_path(&bin_dir, &target_path)
+                        .ok_or_else(|| format!("Could not compute relative path from {} to {}", bin_dir.display(), target_path.display()))?;
 
                     create_symlink(&relative_target, &symlink_path)
                         .map_err(|e| format!("Failed to create bin symlink for {}: {}", cmd_name, e))?;
@@ -225,7 +248,11 @@ impl Linker {
         let order = self.get_build_order(resolved_graph, direct_deps);
         for key in order {
             if let Some(pkg) = resolved_graph.get(&key) {
-                let pkg_store_dir = self.local_package_store_dir(&pkg.name, &pkg.version);
+                let pkg_store_dir = if pkg.tarball_url.starts_with("workspace:") {
+                    PathBuf::from(&pkg.tarball_url["workspace:".len()..])
+                } else {
+                    self.local_package_store_dir(&pkg.name, &pkg.version)
+                };
                 let pkg_json = match crate::package::PackageJson::read_from_dir(&pkg_store_dir) {
                     Ok(json) => json,
                     Err(_) => continue,
@@ -250,7 +277,11 @@ impl Linker {
 
                 println!("Running lifecycle scripts for {}@{}...", pkg.name, pkg.version);
 
-                let pkg_bin_dir = self.local_pkg_node_modules_dir(&pkg.name, &pkg.version).join(".bin");
+                let pkg_bin_dir = if pkg.tarball_url.starts_with("workspace:") {
+                    pkg_store_dir.join("node_modules").join(".bin")
+                } else {
+                    self.local_pkg_node_modules_dir(&pkg.name, &pkg.version).join(".bin")
+                };
                 let root_bin_dir = self.node_modules_dir.join(".bin");
                 let path_val = std::env::var_os("PATH").unwrap_or_default();
 
@@ -386,6 +417,11 @@ impl Linker {
             order.push(key.to_string());
         }
 
+        for (ws_name, ws_pkg) in self.workspace.members.iter() {
+            let key = format!("{}@{}", ws_name, ws_pkg.version);
+            visit(&key, resolved_graph, &mut visited, &mut order);
+        }
+
         for (name, version) in direct_deps {
             let key = format!("{}@{}", name, version);
             visit(&key, resolved_graph, &mut visited, &mut order);
@@ -393,6 +429,30 @@ impl Linker {
 
         order
     }
+}
+
+fn get_relative_path(from: &Path, to: &Path) -> Option<PathBuf> {
+    let from_components: Vec<_> = from.components().collect();
+    let to_components: Vec<_> = to.components().collect();
+    
+    let mut common_prefix_len = 0;
+    for (f, t) in from_components.iter().zip(to_components.iter()) {
+        if f == t {
+            common_prefix_len += 1;
+        } else {
+            break;
+        }
+    }
+    
+    let mut rel_path = PathBuf::new();
+    for _ in common_prefix_len..from_components.len() {
+        rel_path.push("..");
+    }
+    for comp in &to_components[common_prefix_len..] {
+        rel_path.push(comp.as_os_str());
+    }
+    
+    Some(rel_path)
 }
 
 fn create_symlink(target: &Path, link: &Path) -> std::io::Result<()> {

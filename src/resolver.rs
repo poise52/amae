@@ -45,6 +45,7 @@ pub struct ResolvedPackage {
 pub struct Resolver {
     client: reqwest::Client,
     npmrc: Arc<crate::npmrc::Npmrc>,
+    pub workspace: Arc<crate::workspace::Workspace>,
     metadata_cache: Arc<RwLock<HashMap<String, Arc<RegistryPackage>>>>,
     pub resolved_graph: Arc<RwLock<HashMap<String, ResolvedPackage>>>,
 }
@@ -54,6 +55,7 @@ impl Clone for Resolver {
         Self {
             client: self.client.clone(),
             npmrc: self.npmrc.clone(),
+            workspace: self.workspace.clone(),
             metadata_cache: self.metadata_cache.clone(),
             resolved_graph: self.resolved_graph.clone(),
         }
@@ -61,7 +63,7 @@ impl Clone for Resolver {
 }
 
 impl Resolver {
-    pub fn new(npmrc: Arc<crate::npmrc::Npmrc>) -> Self {
+    pub fn new(npmrc: Arc<crate::npmrc::Npmrc>, workspace: Arc<crate::workspace::Workspace>) -> Self {
         let mut headers = HeaderMap::new();
         headers.insert(
             ACCEPT,
@@ -76,6 +78,7 @@ impl Resolver {
         Self {
             client,
             npmrc,
+            workspace,
             metadata_cache: Arc::new(RwLock::new(HashMap::new())),
             resolved_graph: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -185,6 +188,69 @@ impl Resolver {
 
     pub fn resolve(self, name: String, range_str: String) -> BoxFuture<'static, Result<String, String>> {
         Box::pin(async move {
+            if let Some(ws_pkg) = self.workspace.members.get(&name) {
+                let mut matches = false;
+                if range_str == "workspace:*" || range_str == "*" {
+                    matches = true;
+                } else if range_str.starts_with("workspace:") {
+                    let actual_range = range_str.trim_start_matches("workspace:").trim();
+                    if actual_range == "*" {
+                        matches = true;
+                    } else if let Ok(req) = VersionReq::parse(actual_range) {
+                        if let Ok(ver) = Version::parse(&ws_pkg.version) {
+                            matches = req.matches(&ver);
+                        }
+                    }
+                } else if let Ok(req) = VersionReq::parse(&range_str) {
+                    if let Ok(ver) = Version::parse(&ws_pkg.version) {
+                        matches = req.matches(&ver);
+                    }
+                }
+
+                if matches {
+                    let key = format!("{}@{}", name, ws_pkg.version);
+                    if self.check_resolved(&key) {
+                        return Ok(ws_pkg.version.clone());
+                    }
+
+                    let mut resolved_deps = BTreeMap::new();
+                    let mut combined_deps = ws_pkg.dependencies.clone();
+                    for (k, v) in &ws_pkg.dev_dependencies {
+                        combined_deps.insert(k.clone(), v.clone());
+                    }
+                    
+                    let mut futures = Vec::new();
+                    for (dep_name, dep_range) in combined_deps.iter() {
+                        let dep_name = dep_name.clone();
+                        let dep_range = dep_range.clone();
+                        let resolver_clone = self.clone();
+                        futures.push(tokio::spawn(async move {
+                            let resolved_ver = resolver_clone.resolve(dep_name.clone(), dep_range).await?;
+                            Ok::<(String, String), String>((dep_name, resolved_ver))
+                        }));
+                    }
+
+                    for handle in futures {
+                        let (dep_name, resolved_ver) = handle.await
+                            .map_err(|e| format!("Task join error: {}", e))??;
+                        resolved_deps.insert(dep_name, resolved_ver);
+                    }
+
+                    self.insert_resolved(
+                        key,
+                        ResolvedPackage {
+                            name: name.clone(),
+                            version: ws_pkg.version.clone(),
+                            tarball_url: format!("workspace:{}", ws_pkg.path.display()),
+                            shasum: String::new(),
+                            dependencies: resolved_deps,
+                        },
+                    );
+
+                    return Ok(ws_pkg.version.clone());
+                }
+            }
+
             let metadata = Self::fetch_package_metadata(
                 self.client.clone(),
                 self.npmrc.clone(),

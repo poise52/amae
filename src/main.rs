@@ -5,6 +5,7 @@ mod cas;
 mod linker;
 mod lock;
 mod npmrc;
+mod workspace;
 
 use clap::Parser;
 use cli::{Cli, Commands};
@@ -109,6 +110,7 @@ async fn handle_install(project_dir: &Path) -> Result<(), String> {
     let pkg = PackageJson::read_from_dir(project_dir)?;
     let lock_path = project_dir.join("amae-lock.bin");
     let npmrc = Arc::new(npmrc::Npmrc::load());
+    let workspace = Arc::new(workspace::Workspace::load(project_dir));
 
     let mut direct_deps = BTreeMap::new();
     for (k, v) in pkg.dependencies.iter() {
@@ -118,9 +120,17 @@ async fn handle_install(project_dir: &Path) -> Result<(), String> {
         direct_deps.insert(k.clone(), v.clone());
     }
 
-    if direct_deps.is_empty() {
-        println!("No dependencies found in package.json");
-        return Ok(());
+    let mut all_direct_deps = BTreeMap::new();
+    for (k, v) in &direct_deps {
+        all_direct_deps.insert(k.clone(), v.clone());
+    }
+    for (_, ws_pkg) in &workspace.members {
+        for (k, v) in &ws_pkg.dependencies {
+            all_direct_deps.insert(k.clone(), v.clone());
+        }
+        for (k, v) in &ws_pkg.dev_dependencies {
+            all_direct_deps.insert(k.clone(), v.clone());
+        }
     }
 
     let resolved_packages: HashMap<String, resolver::ResolvedPackage>;
@@ -130,7 +140,7 @@ async fn handle_install(project_dir: &Path) -> Result<(), String> {
         let lockfile = Lockfile::read_from_file(&lock_path)?;
         
         let mut match_ok = true;
-        for (k, v) in &direct_deps {
+        for (k, v) in &all_direct_deps {
             if lockfile.direct_dependencies.get(k) != Some(v) {
                 match_ok = false;
                 break;
@@ -141,14 +151,14 @@ async fn handle_install(project_dir: &Path) -> Result<(), String> {
             resolved_packages = lockfile.packages.into_iter().collect();
         } else {
             println!("Lockfile out of date. Resolving dependencies...");
-            resolved_packages = run_resolver(&direct_deps, npmrc.clone()).await?;
-            let lockfile = Lockfile::new(direct_deps.clone(), resolved_packages.clone());
+            resolved_packages = run_resolver(&all_direct_deps, npmrc.clone(), workspace.clone()).await?;
+            let lockfile = Lockfile::new(all_direct_deps.clone(), resolved_packages.clone());
             lockfile.write_to_file(&lock_path)?;
         }
     } else {
         println!("Resolving dependencies...");
-        resolved_packages = run_resolver(&direct_deps, npmrc.clone()).await?;
-        let lockfile = Lockfile::new(direct_deps.clone(), resolved_packages.clone());
+        resolved_packages = run_resolver(&all_direct_deps, npmrc.clone(), workspace.clone()).await?;
+        let lockfile = Lockfile::new(all_direct_deps.clone(), resolved_packages.clone());
         lockfile.write_to_file(&lock_path)?;
     }
 
@@ -158,6 +168,9 @@ async fn handle_install(project_dir: &Path) -> Result<(), String> {
     let mut download_handles = Vec::new();
 
     for pkg in resolved_packages.values() {
+        if pkg.tarball_url.starts_with("workspace:") {
+            continue;
+        }
         let cas_clone = cas.clone();
         let client_clone = client.clone();
         let npmrc_clone = npmrc.clone();
@@ -176,7 +189,7 @@ async fn handle_install(project_dir: &Path) -> Result<(), String> {
     }
 
     println!("Linking dependencies...");
-    let linker = Linker::new(project_dir);
+    let linker = Linker::new(project_dir, workspace.clone());
     linker.prepare()?;
 
     let mut direct_resolved = Vec::new();
@@ -204,14 +217,24 @@ async fn handle_install(project_dir: &Path) -> Result<(), String> {
 async fn run_resolver(
     direct_deps: &BTreeMap<String, String>,
     npmrc: Arc<npmrc::Npmrc>,
+    workspace: Arc<workspace::Workspace>,
 ) -> Result<HashMap<String, resolver::ResolvedPackage>, String> {
-    let resolver = Resolver::new(npmrc);
+    let resolver = Resolver::new(npmrc, workspace.clone());
     let mut resolve_handles = Vec::new();
 
     for (name, range) in direct_deps {
         let resolver_clone = resolver.clone();
         let name = name.clone();
         let range = range.clone();
+        resolve_handles.push(tokio::spawn(async move {
+            resolver_clone.resolve(name, range).await
+        }));
+    }
+
+    for (ws_name, ws_pkg) in &workspace.members {
+        let resolver_clone = resolver.clone();
+        let name = ws_name.clone();
+        let range = format!("workspace:{}", ws_pkg.version);
         resolve_handles.push(tokio::spawn(async move {
             resolver_clone.resolve(name, range).await
         }));
