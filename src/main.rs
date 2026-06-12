@@ -59,6 +59,7 @@ fn handle_init(project_dir: &Path) -> Result<(), String> {
         version: Some("1.0.0".to_string()),
         dependencies: BTreeMap::new(),
         dev_dependencies: BTreeMap::new(),
+        bin: None,
     };
 
     default_pkg.write_to_dir(project_dir)?;
@@ -187,6 +188,7 @@ async fn handle_add(project_dir: &Path, package_name: &str, dev: bool) -> Result
             version: Some("1.0.0".to_string()),
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
+            bin: None,
         };
         default_pkg.write_to_dir(project_dir)?;
         default_pkg

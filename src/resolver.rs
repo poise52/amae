@@ -21,6 +21,8 @@ pub struct RegistryVersion {
     pub dependencies: BTreeMap<String, String>,
     #[serde(default)]
     pub dev_dependencies: BTreeMap<String, String>,
+    #[serde(default, rename = "optionalDependencies")]
+    pub optional_dependencies: BTreeMap<String, String>,
     pub dist: RegistryDist,
 }
 
@@ -196,9 +198,14 @@ impl Resolver {
                     None => return Err(format!("No matching version found for {}@{}", name, range_str)),
                 };
 
+                let mut combined_deps = ver_info.dependencies.clone();
+                for (k, v) in &ver_info.optional_dependencies {
+                    combined_deps.insert(k.clone(), v.clone());
+                }
+
                 (
                     version_str.clone(),
-                    ver_info.dependencies.clone(),
+                    combined_deps,
                     ver_info.dist.tarball.clone(),
                     ver_info.dist.shasum.clone(),
                 )

@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 use crate::resolver::ResolvedPackage;
 
 pub struct Linker {
@@ -109,6 +109,78 @@ impl Linker {
                 .map_err(|e| format!("Failed to create direct symlink for {}: {}", name, e))?;
         }
 
+        for (_, pkg) in resolved_graph.iter() {
+            let local_pkg_store_dir = self.local_package_store_dir(&pkg.name, &pkg.version);
+            let local_pkg_node_modules = local_pkg_store_dir.parent().unwrap();
+            let deps_list: Vec<(String, String)> = pkg.dependencies.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            self.link_binaries(local_pkg_node_modules, &deps_list)?;
+        }
+
+        self.link_binaries(&self.node_modules_dir, direct_deps)?;
+
+        Ok(())
+    }
+
+    fn link_binaries(
+        &self,
+        base_node_modules: &Path,
+        dependencies: &[(String, String)],
+    ) -> Result<(), String> {
+        let bin_dir = base_node_modules.join(".bin");
+        
+        for (dep_name, dep_version) in dependencies {
+            let escaped_dep = dep_name.replace('/', "+");
+            let dep_store_dir = self.local_package_store_dir(dep_name, dep_version);
+            let pkg_json_path = dep_store_dir.join("package.json");
+            
+            if !pkg_json_path.exists() {
+                continue;
+            }
+
+            let pkg_json = match crate::package::PackageJson::read_from_dir(&dep_store_dir) {
+                Ok(json) => json,
+                Err(_) => continue,
+            };
+
+            if let Some(bin_config) = pkg_json.bin {
+                fs::create_dir_all(&bin_dir)
+                    .map_err(|e| format!("Failed to create bin dir {}: {}", bin_dir.display(), e))?;
+
+                let bins = match bin_config {
+                    crate::package::BinConfig::Single(path) => {
+                        let name_without_scope = dep_name.split('/').last().unwrap().to_string();
+                        let mut map = BTreeMap::new();
+                        map.insert(name_without_scope, path);
+                        map
+                    }
+                    crate::package::BinConfig::Multiple(map) => map,
+                };
+
+                for (cmd_name, bin_rel_path) in bins {
+                    let symlink_path = bin_dir.join(&cmd_name);
+                    
+                    if symlink_path.exists() || symlink_path.is_symlink() {
+                        let _ = fs::remove_file(&symlink_path);
+                    }
+
+                    let relative_target = PathBuf::from(format!(
+                        "../.store/{}@{}/node_modules/{}/{}",
+                        escaped_dep, dep_version, dep_name, bin_rel_path
+                    ));
+
+                    create_symlink(&relative_target, &symlink_path)
+                        .map_err(|e| format!("Failed to create bin symlink for {}: {}", cmd_name, e))?;
+
+                    let real_bin_path = dep_store_dir.join(&bin_rel_path);
+                    if let Err(e) = make_executable(&real_bin_path) {
+                        return Err(format!("Failed to make binary {} executable: {}", real_bin_path.display(), e));
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -158,4 +230,18 @@ fn create_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
             Ok(())
         }
     }
+}
+
+#[cfg(unix)]
+fn make_executable<P: AsRef<Path>>(path: P) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = fs::metadata(&path)?;
+    let mut perms = metadata.permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&path, perms)
+}
+
+#[cfg(not(unix))]
+fn make_executable<P: AsRef<Path>>(_path: P) -> std::io::Result<()> {
+    Ok(())
 }

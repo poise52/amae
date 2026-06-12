@@ -4,6 +4,13 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum BinConfig {
+    Single(String),
+    Multiple(BTreeMap<String, String>),
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageJson {
@@ -15,7 +22,10 @@ pub struct PackageJson {
     pub dependencies: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dev_dependencies: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bin: Option<BinConfig>,
 }
+
 
 impl PackageJson {
     pub fn read_from_dir<P: AsRef<Path>>(dir: P) -> Result<Self, String> {
