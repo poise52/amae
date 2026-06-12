@@ -106,6 +106,9 @@ jobs:
             });
           "
 
+      - name: Copy README to npm package
+        run: cp README.md npm/amae-cli/README.md
+
       - name: Download all platform binaries
         uses: actions/download-artifact@v4
         with:
