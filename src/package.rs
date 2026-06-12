@@ -22,6 +22,8 @@ pub struct PackageJson {
     pub dependencies: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dev_dependencies: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub scripts: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bin: Option<BinConfig>,
 }

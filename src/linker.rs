@@ -45,8 +45,7 @@ impl Linker {
         }
 
         for (_, pkg) in resolved_graph.iter() {
-            let local_pkg_store_dir = self.local_package_store_dir(&pkg.name, &pkg.version);
-            let local_pkg_node_modules = local_pkg_store_dir.parent().unwrap();
+            let local_pkg_node_modules = self.local_pkg_node_modules_dir(&pkg.name, &pkg.version);
 
             for (dep_name, dep_version) in pkg.dependencies.iter() {
                 let escaped_dep = dep_name.replace('/', "+");
@@ -110,12 +109,11 @@ impl Linker {
         }
 
         for (_, pkg) in resolved_graph.iter() {
-            let local_pkg_store_dir = self.local_package_store_dir(&pkg.name, &pkg.version);
-            let local_pkg_node_modules = local_pkg_store_dir.parent().unwrap();
+            let local_pkg_node_modules = self.local_pkg_node_modules_dir(&pkg.name, &pkg.version);
             let deps_list: Vec<(String, String)> = pkg.dependencies.iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
-            self.link_binaries(local_pkg_node_modules, &deps_list)?;
+            self.link_binaries(&local_pkg_node_modules, &deps_list)?;
         }
 
         self.link_binaries(&self.node_modules_dir, direct_deps)?;
@@ -184,12 +182,15 @@ impl Linker {
         Ok(())
     }
 
-    fn local_package_store_dir(&self, name: &str, version: &str) -> PathBuf {
+    fn local_pkg_node_modules_dir(&self, name: &str, version: &str) -> PathBuf {
         let escaped_name = name.replace('/', "+");
         self.store_dir
             .join(format!("{}@{}", escaped_name, version))
             .join("node_modules")
-            .join(name)
+    }
+
+    fn local_package_store_dir(&self, name: &str, version: &str) -> PathBuf {
+        self.local_pkg_node_modules_dir(name, version).join(name)
     }
 
     fn link_dir_recursive(&self, src: &Path, dest: &Path) -> Result<(), String> {

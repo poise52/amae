@@ -31,4 +31,10 @@ pub enum Commands {
         /// Name of the package to remove
         package: String,
     },
+    
+    /// Run a script defined in package.json
+    Run {
+        /// Name of the script to run (e.g. dev)
+        script: String,
+    },
 }

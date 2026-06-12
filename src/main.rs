@@ -45,6 +45,12 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Run { script } => {
+            if let Err(e) = handle_run(&project_dir, &script).await {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
     }
 }
 
@@ -59,6 +65,7 @@ fn handle_init(project_dir: &Path) -> Result<(), String> {
         version: Some("1.0.0".to_string()),
         dependencies: BTreeMap::new(),
         dev_dependencies: BTreeMap::new(),
+        scripts: BTreeMap::new(),
         bin: None,
     };
 
@@ -188,6 +195,7 @@ async fn handle_add(project_dir: &Path, package_name: &str, dev: bool) -> Result
             version: Some("1.0.0".to_string()),
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
+            scripts: BTreeMap::new(),
             bin: None,
         };
         default_pkg.write_to_dir(project_dir)?;
@@ -267,3 +275,60 @@ async fn handle_remove(project_dir: &Path, package_name: &str) -> Result<(), Str
 
     handle_install(project_dir).await
 }
+
+async fn handle_run(project_dir: &Path, script_name: &str) -> Result<(), String> {
+    let pkg = PackageJson::read_from_dir(project_dir)?;
+    let cmd_str = pkg.scripts.get(script_name)
+        .ok_or_else(|| format!("Script '{}' not found in package.json", script_name))?;
+
+    println!("> {}", cmd_str);
+
+    let local_bin = project_dir.join("node_modules").join(".bin");
+    let mut path_val = std::env::var_os("PATH").unwrap_or_default();
+    
+    #[cfg(unix)]
+    {
+        let mut new_path = local_bin.into_os_string();
+        if !path_val.is_empty() {
+            new_path.push(":");
+            new_path.push(path_val);
+        }
+        path_val = new_path;
+    }
+    #[cfg(windows)]
+    {
+        let mut new_path = local_bin.into_os_string();
+        if !path_val.is_empty() {
+            new_path.push(";");
+            new_path.push(path_val);
+        }
+        path_val = new_path;
+    }
+
+    #[cfg(unix)]
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd_str)
+        .env("PATH", path_val)
+        .current_dir(project_dir)
+        .spawn()
+        .map_err(|e| format!("Failed to start shell process: {}", e))?;
+
+    #[cfg(windows)]
+    let mut child = std::process::Command::new("cmd")
+        .arg("/C")
+        .arg(cmd_str)
+        .env("PATH", path_val)
+        .current_dir(project_dir)
+        .spawn()
+        .map_err(|e| format!("Failed to start shell process: {}", e))?;
+
+    let status = child.wait().map_err(|e| format!("Failed to wait for process: {}", e))?;
+
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+
+    Ok(())
+}
+
