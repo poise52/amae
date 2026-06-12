@@ -140,7 +140,7 @@ jobs:
           for pkg in amae-darwin-arm64 amae-darwin-x64 amae-linux-x64 amae-win32-x64; do
             echo "Publishing $pkg..."
             cd npm/$pkg
-            npm publish --access public || echo "Already published, skipping"
+            npm publish --access public 2>&1 && echo "Published $pkg" || echo "Skipping $pkg (already published or error)"
             cd ../..
           done
 
