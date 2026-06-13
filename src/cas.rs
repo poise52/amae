@@ -161,8 +161,8 @@ impl Cas {
                 }
             }
 
-            if let Err(e) = make_dir_read_only(&dest_dir) {
-                return Err(format!("Failed to make package store directory read-only: {}", e));
+            if let Err(e) = make_dir_writable(&dest_dir) {
+                return Err(format!("Failed to make package store directory writable: {}", e));
             }
         }
 
@@ -170,7 +170,7 @@ impl Cas {
     }
 }
 
-fn make_dir_read_only(dir: &std::path::Path) -> Result<(), String> {
+fn make_dir_writable(dir: &std::path::Path) -> Result<(), String> {
     for entry in fs::read_dir(dir).map_err(|e| format!("Failed to read dir: {}", e))? {
         let entry = entry.map_err(|e| format!("Failed to get entry: {}", e))?;
         let path = entry.path();
@@ -178,19 +178,41 @@ fn make_dir_read_only(dir: &std::path::Path) -> Result<(), String> {
         let mut perms = metadata.permissions();
 
         if metadata.is_dir() {
-            make_dir_read_only(&path)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = perms.mode();
+                perms.set_mode(mode | 0o700);
+            }
+            #[cfg(not(unix))]
+            perms.set_readonly(false);
+            fs::set_permissions(&path, perms.clone()).map_err(|e| format!("Failed to set permissions: {}", e))?;
+
+            make_dir_writable(&path)?;
         } else {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 let mode = perms.mode();
-                perms.set_mode(mode & !0o222);
+                perms.set_mode(mode | 0o600);
             }
             #[cfg(not(unix))]
-            perms.set_readonly(true);
+            perms.set_readonly(false);
             fs::set_permissions(&path, perms).map_err(|e| format!("Failed to set permissions: {}", e))?;
         }
     }
+
+    let metadata = fs::metadata(dir).map_err(|e| format!("Failed to get metadata: {}", e))?;
+    let mut perms = metadata.permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = perms.mode();
+        perms.set_mode(mode | 0o700);
+    }
+    #[cfg(not(unix))]
+    perms.set_readonly(false);
+    fs::set_permissions(dir, perms).map_err(|e| format!("Failed to set permissions: {}", e))?;
 
     Ok(())
 }

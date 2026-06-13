@@ -4,6 +4,12 @@ All notable changes to the `amae` package manager will be documented in this fil
 
 ---
 
+## [0.9.2] - 2026-06-13
+### Fixed
+- **Cache store file permissions**: Forces all files in the cache store to be writable by their owner, and avoids making directories read-only. This fixes `EACCES: permission denied` errors when deleting the cache directory (e.g. using `rimraf`) during local installs, cleanup scripts, or benchmarks.
+
+---
+
 ## [0.9.1] - 2026-06-13
 ### Added
 - **Scoped registry support**: Resolves package names starting with specific scopes (e.g. `@mycompany`) using custom registry URLs defined in `.npmrc` via `@scope:registry=...`.
