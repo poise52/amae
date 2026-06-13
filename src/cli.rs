@@ -69,4 +69,17 @@ pub enum Commands {
 
     /// Prune global CAS store
     Prune,
+
+    /// Show why a package is installed
+    Why {
+        /// Name of the package to query
+        package: String,
+    },
+
+    /// Generate shell autocompletion scripts
+    Completions {
+        /// The shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }

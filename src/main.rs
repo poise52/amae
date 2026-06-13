@@ -7,7 +7,7 @@ mod lock;
 mod npmrc;
 mod workspace;
 
-use clap::Parser;
+use clap::{Parser, CommandFactory};
 use cli::{Cli, Commands};
 use package::PackageJson;
 use resolver::Resolver;
@@ -44,6 +44,8 @@ async fn run_app() -> Result<(), String> {
         Commands::Clean => handle_clean(&project_dir),
         Commands::List => handle_list(&project_dir),
         Commands::Prune => handle_prune(),
+        Commands::Why { package } => handle_why(&project_dir, &package),
+        Commands::Completions { shell } => handle_completions(shell),
     }
 }
 
@@ -899,5 +901,161 @@ fn handle_prune() -> Result<(), String> {
 
     println!("{}", style("Successfully pruned global CAS store.").green().bold());
     Ok(())
+}
+
+fn handle_completions(shell: clap_complete::Shell) -> Result<(), String> {
+    let mut cmd = Cli::command();
+    clap_complete::generate(shell, &mut cmd, "amae", &mut std::io::stdout());
+    Ok(())
+}
+
+fn handle_why(project_dir: &Path, target_name: &str) -> Result<(), String> {
+    let pkg = PackageJson::read_from_dir(project_dir)?;
+    let workspace = workspace::Workspace::load(project_dir);
+    let lock_path = project_dir.join("amae-lock.bin");
+    if !lock_path.exists() {
+        return Err("No lockfile found. Run 'amae install' first.".to_string());
+    }
+    let lockfile = Lockfile::read_from_file(&lock_path)?;
+
+    let mut target_keys = Vec::new();
+    for key in lockfile.packages.keys() {
+        if key == target_name || key.starts_with(&format!("{}@", target_name)) {
+            target_keys.push(key.clone());
+        }
+    }
+
+    if target_keys.is_empty() {
+        println!("Package '{}' is not installed in the project.", target_name);
+        return Ok(());
+    }
+
+    let mut parent_map: HashMap<String, Vec<String>> = HashMap::new();
+
+    for (pkg_key, pkg_info) in &lockfile.packages {
+        for (dep_name, dep_version) in &pkg_info.dependencies {
+            let dep_key = format!("{}@{}", dep_name, dep_version);
+            let parents = parent_map.entry(dep_key).or_default();
+            if !parents.contains(pkg_key) {
+                parents.push(pkg_key.clone());
+            }
+        }
+    }
+
+    fn add_direct(
+        deps: &BTreeMap<String, String>,
+        parent_key: &str,
+        lockfile: &Lockfile,
+        parent_map: &mut HashMap<String, Vec<String>>,
+    ) {
+        for (dep_name, dep_range) in deps {
+            for (pkg_key, pkg_info) in &lockfile.packages {
+                if pkg_info.name == *dep_name {
+                    let mut matches = false;
+                    if dep_range.starts_with("workspace:") {
+                        matches = true;
+                    } else if let Ok(req) = semver::VersionReq::parse(dep_range) {
+                        if let Ok(ver) = semver::Version::parse(&pkg_info.version) {
+                            matches = req.matches(&ver);
+                        }
+                    } else {
+                        matches = pkg_info.version == *dep_range;
+                    }
+
+                    if matches {
+                        let parents = parent_map.entry(pkg_key.clone()).or_default();
+                        let p_str = parent_key.to_string();
+                        if !parents.contains(&p_str) {
+                            parents.push(p_str);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    add_direct(&pkg.dependencies, "root", &lockfile, &mut parent_map);
+    add_direct(&pkg.dev_dependencies, "root", &lockfile, &mut parent_map);
+
+    for (ws_name, ws_pkg) in &workspace.members {
+        let ws_key = format!("{}@{}", ws_name, ws_pkg.version);
+        let parents = parent_map.entry(ws_key.clone()).or_default();
+        let root_str = "root".to_string();
+        if !parents.contains(&root_str) {
+            parents.push(root_str);
+        }
+        add_direct(&ws_pkg.dependencies, &ws_key, &lockfile, &mut parent_map);
+        add_direct(&ws_pkg.dev_dependencies, &ws_key, &lockfile, &mut parent_map);
+    }
+
+    let mut paths_found = 0;
+    for target_key in &target_keys {
+        let mut current_path = vec![target_key.clone()];
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(target_key.clone());
+        
+        let mut paths = Vec::new();
+        find_paths_backwards(target_key, &parent_map, &mut visited, &mut current_path, &mut paths);
+
+        if !paths.is_empty() {
+            println!("Paths to {}:", style(target_key).green().bold());
+            for path in paths {
+                let mut forward_path = path.clone();
+                forward_path.reverse();
+                
+                for (i, node) in forward_path.iter().enumerate() {
+                    if i > 0 {
+                        print!(" {} ", style("➔").dim());
+                    }
+                    if node == "root" {
+                        print!("{}", style("root").bold());
+                    } else if node == target_key {
+                        print!("{}", style(node).green().bold());
+                    } else {
+                        print!("{}", style(node).cyan());
+                    }
+                }
+                println!();
+                paths_found += 1;
+            }
+        }
+    }
+
+    if paths_found == 0 {
+        println!("No dependency paths found to '{}'.", target_name);
+    }
+
+    Ok(())
+}
+
+fn find_paths_backwards(
+    current: &str,
+    parent_map: &HashMap<String, Vec<String>>,
+    visited: &mut std::collections::HashSet<String>,
+    current_path: &mut Vec<String>,
+    all_paths: &mut Vec<Vec<String>>,
+) {
+    if current == "root" {
+        all_paths.push(current_path.clone());
+        return;
+    }
+
+    if let Some(parents) = parent_map.get(current) {
+        for parent in parents {
+            if parent == "root" {
+                let mut path = current_path.clone();
+                path.push("root".to_string());
+                all_paths.push(path);
+            } else if !visited.contains(parent) {
+                visited.insert(parent.clone());
+                current_path.push(parent.clone());
+                
+                find_paths_backwards(parent, parent_map, visited, current_path, all_paths);
+                
+                current_path.pop();
+                visited.remove(parent);
+            }
+        }
+    }
 }
 
