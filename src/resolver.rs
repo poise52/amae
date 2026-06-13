@@ -98,6 +98,19 @@ impl Resolver {
         }
     }
 
+    pub fn parse_alias(name: &str, range_str: &str) -> (String, String) {
+        if range_str.starts_with("npm:") {
+            let spec = &range_str[4..];
+            if let Some(at_pos) = spec.rfind('@').filter(|&p| p > 0) {
+                (spec[..at_pos].to_string(), spec[at_pos + 1..].to_string())
+            } else {
+                (spec.to_string(), "*".to_string())
+            }
+        } else {
+            (name.to_string(), range_str.to_string())
+        }
+    }
+
     fn matches_range(version: &Version, range_str: &str, dist_tags: &BTreeMap<String, String>) -> bool {
         if let Some(target_ver) = dist_tags.get(range_str) {
             if let Ok(parsed_target) = Version::parse(target_ver) {
@@ -160,40 +173,57 @@ impl Resolver {
         let registry = &npmrc.registry;
         let url = format!("{}/{}", registry.trim_end_matches('/'), url_encoded_name);
 
-        let mut req = client.get(&url);
-        if let Some(token) = npmrc.get_token(&url) {
-            req = req.header("Authorization", format!("Bearer {}", token));
+        let mut last_err = String::new();
+        for attempt in 0..3u32 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(500 * 2u64.pow(attempt - 1))).await;
+            }
+
+            let mut req = client.get(&url);
+            if let Some(token) = npmrc.get_token(&url) {
+                req = req.header("Authorization", format!("Bearer {}", token));
+            }
+
+            let response = match req.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = format!("Network error fetching {}: {}", name, e);
+                    continue;
+                }
+            };
+
+            if response.status() == 404 {
+                return Err(format!("Package not found: {}", name));
+            }
+
+            let pkg: RegistryPackage = match response.json().await {
+                Ok(p) => p,
+                Err(e) => {
+                    last_err = format!("Failed to parse metadata for {}: {}", name, e);
+                    continue;
+                }
+            };
+
+            let pkg_arc = Arc::new(pkg);
+            if let Ok(mut cache) = metadata_cache.write() {
+                cache.insert(name, pkg_arc.clone());
+            }
+            return Ok(pkg_arc);
         }
 
-        let response = req.send()
-            .await
-            .map_err(|e| format!("Network error fetching {}: {}", name, e))?;
-
-        if response.status() == 404 {
-            return Err(format!("Package not found: {}", name));
-        }
-
-        let pkg: RegistryPackage = response.json()
-            .await
-            .map_err(|e| format!("Failed to parse metadata for {}: {}", name, e))?;
-
-        let pkg_arc = Arc::new(pkg);
-        
-        if let Ok(mut cache) = metadata_cache.write() {
-            cache.insert(name, pkg_arc.clone());
-        }
-
-        Ok(pkg_arc)
+        Err(last_err)
     }
 
     pub fn resolve(self, name: String, range_str: String) -> BoxFuture<'static, Result<String, String>> {
         Box::pin(async move {
-            if let Some(ws_pkg) = self.workspace.members.get(&name) {
+            let (real_name, real_range) = Self::parse_alias(&name, &range_str);
+
+            if let Some(ws_pkg) = self.workspace.members.get(&real_name) {
                 let mut matches = false;
-                if range_str == "workspace:*" || range_str == "*" {
+                if real_range == "workspace:*" || real_range == "*" {
                     matches = true;
-                } else if range_str.starts_with("workspace:") {
-                    let actual_range = range_str.trim_start_matches("workspace:").trim();
+                } else if real_range.starts_with("workspace:") {
+                    let actual_range = real_range.trim_start_matches("workspace:").trim();
                     if actual_range == "*" {
                         matches = true;
                     } else if let Ok(req) = VersionReq::parse(actual_range) {
@@ -201,7 +231,7 @@ impl Resolver {
                             matches = req.matches(&ver);
                         }
                     }
-                } else if let Ok(req) = VersionReq::parse(&range_str) {
+                } else if let Ok(req) = VersionReq::parse(&real_range) {
                     if let Ok(ver) = Version::parse(&ws_pkg.version) {
                         matches = req.matches(&ver);
                     }
@@ -223,6 +253,19 @@ impl Resolver {
                     for (dep_name, dep_range) in combined_deps.iter() {
                         let dep_name = dep_name.clone();
                         let dep_range = dep_range.clone();
+
+                        if dep_range.starts_with("file:")
+                            || dep_range.starts_with("link:")
+                            || dep_range.starts_with("git+")
+                            || dep_range.starts_with("git:")
+                            || dep_range.starts_with("https:")
+                            || dep_range.starts_with("http:")
+                            || dep_range.starts_with('/')
+                            || dep_range.starts_with('.')
+                        {
+                            continue;
+                        }
+
                         let resolver_clone = self.clone();
                         futures.push(tokio::spawn(async move {
                             let resolved_ver = resolver_clone.resolve(dep_name.clone(), dep_range).await?;
@@ -239,7 +282,7 @@ impl Resolver {
                     self.insert_resolved(
                         key,
                         ResolvedPackage {
-                            name: name.clone(),
+                            name: real_name.clone(),
                             version: ws_pkg.version.clone(),
                             tarball_url: format!("workspace:{}", ws_pkg.path.display()),
                             shasum: String::new(),
@@ -255,14 +298,14 @@ impl Resolver {
                 self.client.clone(),
                 self.npmrc.clone(),
                 self.metadata_cache.clone(),
-                name.clone(),
+                real_name.clone(),
             ).await?;
 
             let (version, deps, tarball_url, shasum) = {
                 let mut matched_version: Option<(&String, &RegistryVersion)> = None;
                 for (ver_str, ver_info) in metadata.versions.iter().rev() {
                     if let Ok(ver) = Version::parse(ver_str) {
-                        if Self::matches_range(&ver, &range_str, &metadata.dist_tags) {
+                        if Self::matches_range(&ver, &real_range, &metadata.dist_tags) {
                             matched_version = Some((ver_str, ver_info));
                             break;
                         }
@@ -271,7 +314,7 @@ impl Resolver {
 
                 let (version_str, ver_info) = match matched_version {
                     Some(v) => v,
-                    None => return Err(format!("No matching version found for {}@{}", name, range_str)),
+                    None => return Err(format!("No matching version found for {}@{}", real_name, real_range)),
                 };
 
                 let mut combined_deps = ver_info.dependencies.clone();
@@ -299,6 +342,19 @@ impl Resolver {
             for (dep_name, dep_range) in deps.iter() {
                 let dep_name = dep_name.clone();
                 let dep_range = dep_range.clone();
+
+                if dep_range.starts_with("file:")
+                    || dep_range.starts_with("link:")
+                    || dep_range.starts_with("git+")
+                    || dep_range.starts_with("git:")
+                    || dep_range.starts_with("https:")
+                    || dep_range.starts_with("http:")
+                    || dep_range.starts_with('/')
+                    || dep_range.starts_with('.')
+                {
+                    continue;
+                }
+
                 let resolver_clone = self.clone();
                 futures.push(tokio::spawn(async move {
                     let resolved_ver = resolver_clone.resolve(dep_name.clone(), dep_range).await?;
@@ -315,7 +371,7 @@ impl Resolver {
             self.insert_resolved(
                 key,
                 ResolvedPackage {
-                    name: name.clone(),
+                    name: real_name.clone(),
                     version: version.clone(),
                     tarball_url,
                     shasum,
@@ -325,5 +381,26 @@ impl Resolver {
 
             Ok(version)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_alias() {
+        assert_eq!(
+            Resolver::parse_alias("react-is-18", "npm:react-is@^18.0.0"),
+            ("react-is".to_string(), "^18.0.0".to_string())
+        );
+        assert_eq!(
+            Resolver::parse_alias("react-is-18", "npm:react-is"),
+            ("react-is".to_string(), "*".to_string())
+        );
+        assert_eq!(
+            Resolver::parse_alias("react-is", "^18.0.0"),
+            ("react-is".to_string(), "^18.0.0".to_string())
+        );
     }
 }

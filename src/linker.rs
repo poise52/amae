@@ -75,7 +75,7 @@ impl Linker {
                     if dep_pkg.tarball_url.starts_with("workspace:") {
                         PathBuf::from(&dep_pkg.tarball_url["workspace:".len()..])
                     } else {
-                        self.local_package_store_dir(dep_name, dep_version)
+                        self.local_package_store_dir(&dep_pkg.name, &dep_pkg.version)
                     }
                 } else {
                     self.local_package_store_dir(dep_name, dep_version)
@@ -106,7 +106,7 @@ impl Linker {
                 if dep_pkg.tarball_url.starts_with("workspace:") {
                     PathBuf::from(&dep_pkg.tarball_url["workspace:".len()..])
                 } else {
-                    self.local_package_store_dir(name, version)
+                    self.local_package_store_dir(&dep_pkg.name, &dep_pkg.version)
                 }
             } else {
                 self.local_package_store_dir(name, version)

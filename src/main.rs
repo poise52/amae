@@ -112,12 +112,27 @@ async fn handle_install(project_dir: &Path) -> Result<(), String> {
     let npmrc = Arc::new(npmrc::Npmrc::load());
     let workspace = Arc::new(workspace::Workspace::load(project_dir));
 
+    let is_skipped_specifier = |v: &str| {
+        v.starts_with("file:")
+            || v.starts_with("link:")
+            || v.starts_with("git+")
+            || v.starts_with("git:")
+            || v.starts_with("https:")
+            || v.starts_with("http:")
+            || v.starts_with('/')
+            || v.starts_with('.')
+    };
+
     let mut direct_deps = BTreeMap::new();
     for (k, v) in pkg.dependencies.iter() {
-        direct_deps.insert(k.clone(), v.clone());
+        if !is_skipped_specifier(v) {
+            direct_deps.insert(k.clone(), v.clone());
+        }
     }
     for (k, v) in pkg.dev_dependencies.iter() {
-        direct_deps.insert(k.clone(), v.clone());
+        if !is_skipped_specifier(v) {
+            direct_deps.insert(k.clone(), v.clone());
+        }
     }
 
     let mut all_direct_deps = BTreeMap::new();
@@ -126,10 +141,14 @@ async fn handle_install(project_dir: &Path) -> Result<(), String> {
     }
     for (_, ws_pkg) in &workspace.members {
         for (k, v) in &ws_pkg.dependencies {
-            all_direct_deps.insert(k.clone(), v.clone());
+            if !is_skipped_specifier(v) {
+                all_direct_deps.insert(k.clone(), v.clone());
+            }
         }
         for (k, v) in &ws_pkg.dev_dependencies {
-            all_direct_deps.insert(k.clone(), v.clone());
+            if !is_skipped_specifier(v) {
+                all_direct_deps.insert(k.clone(), v.clone());
+            }
         }
     }
 
@@ -195,8 +214,8 @@ async fn handle_install(project_dir: &Path) -> Result<(), String> {
     let mut direct_resolved = Vec::new();
     for (name, _) in &direct_deps {
         let mut resolved_ver = None;
-        for (_, resolved) in &resolved_packages {
-            if &resolved.name == name {
+        for (key, resolved) in &resolved_packages {
+            if key.starts_with(&format!("{}@", name)) {
                 resolved_ver = Some(resolved.version.clone());
                 break;
             }
