@@ -4,6 +4,12 @@ All notable changes to the `amae` package manager will be documented in this fil
 
 ---
 
+## [0.9.5] - 2026-06-13
+### Added
+- **`--ignore-scripts` flag**: Skip executing package lifecycle scripts (`preinstall`, `install`, `postinstall`). This brings `amae` in line with other package managers when testing benchmarks without native build penalties.
+
+---
+
 ## [0.9.4] - 2026-06-13
 ### Fixed
 - **Cache store file permissions**: Forces all files in the cache store to be writable by their owner, and avoids making directories read-only. This fixes `EACCES: permission denied` errors when deleting the cache directory (e.g. using `rimraf`) during local installs, cleanup scripts, or benchmarks. Note: This skips versions 0.9.2 and 0.9.3 to sync up tags properly.

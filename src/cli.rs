@@ -23,6 +23,10 @@ pub enum Commands {
         #[arg(long)]
         production: bool,
 
+        /// Ignore package lifecycle scripts
+        #[arg(long)]
+        ignore_scripts: bool,
+
         /// Use a custom store directory instead of ~/.amae/store
         #[arg(long)]
         store_dir: Option<String>,

@@ -1,6 +1,6 @@
 {
   "name": "amae-darwin-x64",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "description": "Platform-specific binary for amae-darwin-x64",
   "os": [
     "darwin"

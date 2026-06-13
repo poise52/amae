@@ -33,7 +33,7 @@ async fn run_app() -> Result<(), String> {
 
     match args.command {
         Commands::Init => handle_init(&project_dir),
-        Commands::Install { frozen_lockfile, production, store_dir } => handle_install(&project_dir, frozen_lockfile, production, store_dir.as_deref()).await,
+        Commands::Install { frozen_lockfile, production, ignore_scripts, store_dir } => handle_install(&project_dir, frozen_lockfile, production, ignore_scripts, store_dir.as_deref()).await,
         Commands::Update { package } => handle_update(&project_dir, &package).await,
         Commands::Outdated => handle_outdated(&project_dir).await,
         Commands::Add { package, dev } => handle_add(&project_dir, &package, dev).await,
@@ -69,7 +69,7 @@ fn handle_init(project_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: bool, store_dir: Option<&str>) -> Result<(), String> {
+async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: bool, ignore_scripts: bool, store_dir: Option<&str>) -> Result<(), String> {
     let pkg = PackageJson::read_from_dir(project_dir)?;
     let lock_path = project_dir.join("amae-lock.bin");
     let npmrc = Arc::new(npmrc::Npmrc::load());
@@ -237,7 +237,9 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
     }
 
     linker.link(&resolved_packages, &direct_resolved)?;
-    linker.run_lifecycle_scripts(&resolved_packages, &direct_resolved)?;
+    if !ignore_scripts {
+        linker.run_lifecycle_scripts(&resolved_packages, &direct_resolved)?;
+    }
     println!("{}", style("Successfully installed dependencies.").green().bold());
     Ok(())
 }
@@ -756,7 +758,7 @@ async fn handle_add(project_dir: &Path, package_name: &str, dev: bool) -> Result
     }
 
     pkg.write_to_dir(project_dir)?;
-    handle_install(project_dir, false, false, None).await
+    handle_install(project_dir, false, false, false, None).await
 }
 
 async fn handle_remove(project_dir: &Path, package_name: &str) -> Result<(), String> {
@@ -787,7 +789,7 @@ async fn handle_remove(project_dir: &Path, package_name: &str) -> Result<(), Str
         let _ = std::fs::remove_dir_all(node_modules_dir);
     }
 
-    handle_install(project_dir, false, false, None).await
+    handle_install(project_dir, false, false, false, None).await
 }
 
 async fn handle_run(project_dir: &Path, script_name: &str) -> Result<(), String> {
