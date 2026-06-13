@@ -4,6 +4,12 @@ All notable changes to the `amae` package manager will be documented in this fil
 
 ---
 
+## [0.8.3] - 2026-06-13
+### Added
+- **`amae install --store-dir <path>` flag**: Allows specifying a custom local store directory instead of the default global `~/.amae/store`. Useful for isolated environments, benchmarks, and CI pipelines where the cache directory must be controlled per-run.
+
+---
+
 ## [0.8.2] - 2026-06-13
 ### Added
 - **`amae --version` / `amae -V` flag**: Displays the current amae version. Previously the version was not accessible from the CLI.

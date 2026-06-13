@@ -43,6 +43,7 @@ amae --version                   # Show amae version
 amae install                     # Install all dependencies from package.json
 amae install --frozen-lockfile   # Fail if lockfile is out of sync or missing (CI)
 amae install --production        # Skip devDependencies (production builds)
+amae install --store-dir=./cache # Use a custom local store instead of ~/.amae/store
 amae add axios                   # Add a package and install
 amae add -D vitest               # Add a dev dependency
 amae remove axios                # Remove a package and reinstall

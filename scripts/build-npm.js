@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const execSync = require('child_process').execSync;
 
-const version = '0.8.2';
+const version = '0.8.3';
 const localMode = process.argv.includes('--local');
 const skipBuild = process.argv.includes('--skip-build');
 
