@@ -7,6 +7,7 @@ use directories::UserDirs;
 pub struct Npmrc {
     pub registry: String,
     pub auth_tokens: HashMap<String, String>,
+    pub scoped_registries: HashMap<String, String>,
 }
 
 impl Npmrc {
@@ -14,6 +15,7 @@ impl Npmrc {
         let mut npmrc = Npmrc {
             registry: "https://registry.npmjs.org/".to_string(),
             auth_tokens: HashMap::new(),
+            scoped_registries: HashMap::new(),
         };
 
         if let Some(user_dirs) = UserDirs::new() {
@@ -46,6 +48,9 @@ impl Npmrc {
 
                 if key == "registry" {
                     self.registry = val;
+                } else if key.starts_with('@') && key.ends_with(":registry") {
+                    let scope = key.trim_end_matches(":registry").to_string();
+                    self.scoped_registries.insert(scope, val);
                 } else if key.ends_with(":_authToken") {
                     let domain = key.trim_end_matches(":_authToken").to_string();
                     self.auth_tokens.insert(domain, val);
@@ -55,6 +60,18 @@ impl Npmrc {
             }
         }
         Ok(())
+    }
+
+    pub fn get_registry_for_package(&self, name: &str) -> &str {
+        if name.starts_with('@') {
+            if let Some(slash_idx) = name.find('/') {
+                let scope = &name[..slash_idx];
+                if let Some(registry) = self.scoped_registries.get(scope) {
+                    return registry;
+                }
+            }
+        }
+        &self.registry
     }
 
     pub fn get_token(&self, registry_url: &str) -> Option<&String> {
@@ -79,6 +96,7 @@ mod tests {
     fn test_parse_npmrc() {
         let content = "
             registry=https://custom-registry.com/
+            @mycompany:registry=https://npm.mycompany.com/
             //custom-registry.com/:_authToken=secret-token-123
             _authToken=global-token-456
             ; comment line
@@ -94,6 +112,9 @@ mod tests {
         npmrc.parse_file(temp_file.path()).unwrap();
 
         assert_eq!(npmrc.registry, "https://custom-registry.com/");
+        assert_eq!(npmrc.get_registry_for_package("lodash"), "https://custom-registry.com/");
+        assert_eq!(npmrc.get_registry_for_package("@mycompany/utils"), "https://npm.mycompany.com/");
+        assert_eq!(npmrc.get_registry_for_package("@othercompany/utils"), "https://custom-registry.com/");
         assert_eq!(npmrc.get_token("https://custom-registry.com/npm/"), Some(&"secret-token-123".to_string()));
         assert_eq!(npmrc.get_token("https://other-registry.com/"), Some(&"global-token-456".to_string()));
     }

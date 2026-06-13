@@ -90,32 +90,33 @@ impl Cas {
                 continue;
             }
 
-            match response.bytes().await {
-                Ok(b) => {
-                    bytes = Some(b);
-                    break;
-                }
+            let b = match response.bytes().await {
+                Ok(b) => b,
                 Err(e) => {
                     last_err = format!("Failed to read response bytes: {}", e);
                     continue;
                 }
+            };
+
+            let mut hasher = Sha1::new();
+            hasher.update(&b);
+            let shasum = format!("{:x}", hasher.finalize());
+            if shasum != expected_shasum {
+                last_err = format!(
+                    "Integrity check failed for {}. Expected shasum {}, got {}",
+                    name, expected_shasum, shasum
+                );
+                continue;
             }
+
+            bytes = Some(b);
+            break;
         }
 
         let bytes = match bytes {
             Some(b) => b,
             None => return Err(last_err),
         };
-
-        let mut hasher = Sha1::new();
-        hasher.update(&bytes);
-        let shasum = format!("{:x}", hasher.finalize());
-        if shasum != expected_shasum {
-            return Err(format!(
-                "Integrity check failed for {}. Expected shasum {}, got {}",
-                name, expected_shasum, shasum
-            ));
-        }
 
         let temp_extract_dir = tempfile::Builder::new()
             .prefix("amae-extract-")

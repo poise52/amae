@@ -24,6 +24,8 @@ pub struct RegistryVersion {
     pub dev_dependencies: BTreeMap<String, String>,
     #[serde(default, rename = "optionalDependencies")]
     pub optional_dependencies: BTreeMap<String, String>,
+    #[serde(default, rename = "peerDependencies")]
+    pub peer_dependencies: BTreeMap<String, String>,
     pub dist: RegistryDist,
 }
 
@@ -41,6 +43,8 @@ pub struct ResolvedPackage {
     pub tarball_url: String,
     pub shasum: String,
     pub dependencies: BTreeMap<String, String>,
+    #[serde(default)]
+    pub is_optional: bool,
 }
 
 pub struct Resolver {
@@ -135,9 +139,18 @@ impl Resolver {
 
         let sub_ranges = range_str.split("||");
         for sub_range in sub_ranges {
-            let trimmed = sub_range.trim();
+            let mut trimmed = sub_range.trim().to_string();
             if trimmed.is_empty() {
                 continue;
+            }
+
+            if trimmed.contains(" - ") {
+                let parts: Vec<&str> = trimmed.split(" - ").collect();
+                if parts.len() == 2 {
+                    let left = parts[0].replace('x', "0").replace('X', "0").replace('*', "0");
+                    let right = parts[1].replace('x', "999").replace('X', "999").replace('*', "999");
+                    trimmed = format!(">={}, <={}", left, right);
+                }
             }
 
             let parts: Vec<&str> = trimmed.split_whitespace().collect();
@@ -162,7 +175,7 @@ impl Resolver {
                 }
             }
 
-            if let Ok(req) = VersionReq::parse(&normalized).or_else(|_| VersionReq::parse(trimmed)) {
+            if let Ok(req) = VersionReq::parse(&normalized).or_else(|_| VersionReq::parse(&trimmed)) {
                 if req.matches(version) {
                     return true;
                 }
@@ -186,7 +199,7 @@ impl Resolver {
         }
 
         let url_encoded_name = name.replace('/', "%2f");
-        let registry = &npmrc.registry;
+        let registry = npmrc.get_registry_for_package(&name);
         let url = format!("{}/{}", registry.trim_end_matches('/'), url_encoded_name);
 
         let _permit = sem.acquire().await.map_err(|e| format!("Semaphore error: {}", e))?;
@@ -232,9 +245,32 @@ impl Resolver {
         Err(last_err)
     }
 
-    pub fn resolve(self, name: String, range_str: String) -> BoxFuture<'static, Result<String, String>> {
+    pub fn resolve(self, name: String, range_str: String, is_optional: bool) -> BoxFuture<'static, Result<String, String>> {
         Box::pin(async move {
             let (real_name, real_range) = Self::parse_alias(&name, &range_str);
+
+            let already_resolved_version = {
+                let graph = self.resolved_graph.read().ok();
+                let mut found = None;
+                if let Some(graph) = graph {
+                    for pkg in graph.values() {
+                        if pkg.name == real_name {
+                            if let Ok(ver) = Version::parse(&pkg.version) {
+                                let empty_tags = BTreeMap::new();
+                                if Self::matches_range(&ver, &real_range, &empty_tags) {
+                                    found = Some(pkg.version.clone());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                found
+            };
+
+            if let Some(version) = already_resolved_version {
+                return Ok(version);
+            }
 
             if let Some(ws_pkg) = self.workspace.members.get(&real_name) {
                 let mut matches = false;
@@ -269,6 +305,7 @@ impl Resolver {
                             tarball_url: format!("workspace:{}", ws_pkg.path.display()),
                             shasum: String::new(),
                             dependencies: BTreeMap::new(),
+                            is_optional: false,
                         },
                     );
 
@@ -297,15 +334,15 @@ impl Resolver {
 
                         let resolver_clone = self.clone();
                         futures.push(tokio::spawn(async move {
-                            let resolved_ver = resolver_clone.resolve(dep_name.clone(), dep_range).await?;
-                            Ok::<(String, String), String>((dep_name, resolved_ver))
+                            let resolved_ver = resolver_clone.resolve(dep_name.clone(), dep_range, false).await;
+                            (dep_name, resolved_ver)
                         }));
                     }
 
                     for handle in futures {
                         let (dep_name, resolved_ver) = handle.await
-                            .map_err(|e| format!("Task join error: {}", e))??;
-                        resolved_deps.insert(dep_name, resolved_ver);
+                            .map_err(|e| format!("Task join error: {}", e))?;
+                        resolved_deps.insert(dep_name, resolved_ver?);
                     }
 
                     if let Ok(mut graph) = self.resolved_graph.write() {
@@ -326,7 +363,7 @@ impl Resolver {
                 real_name.clone(),
             ).await?;
 
-            let (version, deps, tarball_url, shasum) = {
+            let (version, deps, tarball_url, shasum, optional_deps_keys) = {
                 let mut matched_version: Option<(&String, &RegistryVersion)> = None;
                 for (ver_str, ver_info) in metadata.versions.iter().rev() {
                     if let Ok(ver) = Version::parse(ver_str) {
@@ -346,18 +383,31 @@ impl Resolver {
                 for (k, v) in &ver_info.optional_dependencies {
                     combined_deps.insert(k.clone(), v.clone());
                 }
+                for (k, v) in &ver_info.peer_dependencies {
+                    combined_deps.insert(k.clone(), v.clone());
+                }
+
+                let optional_keys: std::collections::HashSet<String> = ver_info.optional_dependencies.keys().cloned().collect();
 
                 (
                     version_str.clone(),
                     combined_deps,
                     ver_info.dist.tarball.clone(),
                     ver_info.dist.shasum.clone(),
+                    optional_keys,
                 )
             };
 
             let key = format!("{}@{}", name, version);
 
             if self.check_resolved(&key) {
+                if !is_optional {
+                    if let Ok(mut graph) = self.resolved_graph.write() {
+                        if let Some(pkg) = graph.get_mut(&key) {
+                            pkg.is_optional = false;
+                        }
+                    }
+                }
                 return Ok(version);
             }
 
@@ -369,6 +419,7 @@ impl Resolver {
                     tarball_url: tarball_url.clone(),
                     shasum: shasum.clone(),
                     dependencies: BTreeMap::new(),
+                    is_optional,
                 },
             );
 
@@ -392,16 +443,28 @@ impl Resolver {
                 }
 
                 let resolver_clone = self.clone();
+                let is_dep_optional = optional_deps_keys.contains(&dep_name);
                 futures.push(tokio::spawn(async move {
-                    let resolved_ver = resolver_clone.resolve(dep_name.clone(), dep_range).await?;
-                    Ok::<(String, String), String>((dep_name, resolved_ver))
+                    let resolved_ver = resolver_clone.resolve(dep_name.clone(), dep_range, is_dep_optional).await;
+                    (dep_name, resolved_ver, is_dep_optional)
                 }));
             }
 
             for handle in futures {
-                let (dep_name, resolved_ver) = handle.await
-                    .map_err(|e| format!("Task join error: {}", e))??;
-                resolved_deps.insert(dep_name, resolved_ver);
+                let (dep_name, resolved_ver, is_dep_optional) = handle.await
+                    .map_err(|e| format!("Task join error: {}", e))?;
+                match resolved_ver {
+                    Ok(ver) => {
+                        resolved_deps.insert(dep_name, ver);
+                    }
+                    Err(e) => {
+                        if is_dep_optional {
+                            eprintln!("Warning: Optional dependency {} failed to resolve: {}. Skipping.", dep_name, e);
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                }
             }
 
             if let Ok(mut graph) = self.resolved_graph.write() {

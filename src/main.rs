@@ -119,7 +119,7 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
         }
     }
 
-    let resolved_packages: HashMap<String, resolver::ResolvedPackage>;
+    let mut resolved_packages: HashMap<String, resolver::ResolvedPackage>;
 
     if lock_path.exists() {
         println!("{}", style("Found lockfile. Reading dependencies...").cyan());
@@ -181,19 +181,40 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
         let tarball_url = pkg.tarball_url.clone();
         let shasum = pkg.shasum.clone();
         let pb_clone = pb.clone();
+        let is_optional = pkg.is_optional;
 
         download_handles.push(tokio::spawn(async move {
             pb_clone.set_message(format!("{}@{}", name, version));
             let res = cas_clone.download_and_extract(&client_clone, &npmrc_clone, &name, &version, &tarball_url, &shasum).await;
             pb_clone.inc(1);
-            res
+            (name, version, res, is_optional)
         }));
     }
 
+    let mut failed_optional_packages = std::collections::HashSet::new();
+
     for handle in download_handles {
-        handle.await.map_err(|e| format!("Download thread crashed: {}", e))??;
+        let (name, version, res, is_optional) = handle.await.map_err(|e| format!("Download thread crashed: {}", e))?;
+        if let Err(e) = res {
+            if is_optional {
+                eprintln!("Warning: Failed to download optional dependency {}@{}: {}. Skipping.", name, version, e);
+                failed_optional_packages.insert(format!("{}@{}", name, version));
+            } else {
+                return Err(e);
+            }
+        }
     }
     pb.finish_and_clear();
+
+    if !failed_optional_packages.is_empty() {
+        resolved_packages.retain(|key, _| !failed_optional_packages.contains(key));
+        for pkg in resolved_packages.values_mut() {
+            pkg.dependencies.retain(|dep_name, dep_version| {
+                let dep_key = format!("{}@{}", dep_name, dep_version);
+                !failed_optional_packages.contains(&dep_key)
+            });
+        }
+    }
 
     println!("{}", style("Linking dependencies...").cyan().bold());
     let linker = Linker::new(project_dir, workspace.clone(), store_dir.map(std::path::PathBuf::from));
@@ -267,7 +288,7 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
         }
     }
 
-    let resolved_packages: HashMap<String, resolver::ResolvedPackage>;
+    let mut resolved_packages: HashMap<String, resolver::ResolvedPackage>;
 
     match package_to_update {
         None => {
@@ -325,7 +346,7 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
                     let name = name.clone();
                     let range = range.clone();
                     resolve_handles.push(tokio::spawn(async move {
-                        resolver_clone.resolve(name, range).await
+                        resolver_clone.resolve(name, range, false).await
                     }));
                 }
 
@@ -334,7 +355,7 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
                     let name = ws_name.clone();
                     let range = format!("workspace:{}", ws_pkg.version);
                     resolve_handles.push(tokio::spawn(async move {
-                        resolver_clone.resolve(name, range).await
+                        resolver_clone.resolve(name, range, false).await
                     }));
                 }
 
@@ -378,19 +399,40 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
         let tarball_url = pkg.tarball_url.clone();
         let shasum = pkg.shasum.clone();
         let pb_clone = pb.clone();
+        let is_optional = pkg.is_optional;
 
         download_handles.push(tokio::spawn(async move {
             pb_clone.set_message(format!("{}@{}", name, version));
             let res = cas_clone.download_and_extract(&client_clone, &npmrc_clone, &name, &version, &tarball_url, &shasum).await;
             pb_clone.inc(1);
-            res
+            (name, version, res, is_optional)
         }));
     }
 
+    let mut failed_optional_packages = std::collections::HashSet::new();
+
     for handle in download_handles {
-        handle.await.map_err(|e| format!("Download thread crashed: {}", e))??;
+        let (name, version, res, is_optional) = handle.await.map_err(|e| format!("Download thread crashed: {}", e))?;
+        if let Err(e) = res {
+            if is_optional {
+                eprintln!("Warning: Failed to download optional dependency {}@{}: {}. Skipping.", name, version, e);
+                failed_optional_packages.insert(format!("{}@{}", name, version));
+            } else {
+                return Err(e);
+            }
+        }
     }
     pb.finish_and_clear();
+
+    if !failed_optional_packages.is_empty() {
+        resolved_packages.retain(|key, _| !failed_optional_packages.contains(key));
+        for pkg in resolved_packages.values_mut() {
+            pkg.dependencies.retain(|dep_name, dep_version| {
+                let dep_key = format!("{}@{}", dep_name, dep_version);
+                !failed_optional_packages.contains(&dep_key)
+            });
+        }
+    }
 
     println!("{}", style("Linking dependencies...").cyan().bold());
     let linker = Linker::new(project_dir, workspace.clone(), None);
@@ -633,7 +675,7 @@ async fn run_resolver(
         let name = name.clone();
         let range = range.clone();
         resolve_handles.push(tokio::spawn(async move {
-            resolver_clone.resolve(name, range).await
+            resolver_clone.resolve(name, range, false).await
         }));
     }
 
@@ -642,7 +684,7 @@ async fn run_resolver(
         let name = ws_name.clone();
         let range = format!("workspace:{}", ws_pkg.version);
         resolve_handles.push(tokio::spawn(async move {
-            resolver_clone.resolve(name, range).await
+            resolver_clone.resolve(name, range, false).await
         }));
     }
 
