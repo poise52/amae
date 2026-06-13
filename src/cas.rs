@@ -47,22 +47,48 @@ impl Cas {
             return Ok(dest_dir);
         }
 
-        let mut req = client.get(tarball_url);
-        if let Some(token) = npmrc.get_token(tarball_url) {
-            req = req.header("Authorization", format!("Bearer {}", token));
+        let mut last_err = String::new();
+        let mut bytes = None;
+
+        for attempt in 0..3u32 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(500 * 2u64.pow(attempt - 1))).await;
+            }
+
+            let mut req = client.get(tarball_url);
+            if let Some(token) = npmrc.get_token(tarball_url) {
+                req = req.header("Authorization", format!("Bearer {}", token));
+            }
+
+            let response = match req.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = format!("Failed to download tarball: {}", e);
+                    continue;
+                }
+            };
+
+            if !response.status().is_success() {
+                last_err = format!("Failed to download package: HTTP status {}", response.status());
+                continue;
+            }
+
+            match response.bytes().await {
+                Ok(b) => {
+                    bytes = Some(b);
+                    break;
+                }
+                Err(e) => {
+                    last_err = format!("Failed to read response bytes: {}", e);
+                    continue;
+                }
+            }
         }
 
-        let response = req.send()
-            .await
-            .map_err(|e| format!("Failed to download tarball: {}", e))?;
-
-        if !response.status().is_success() {
-            return Err(format!("Failed to download package: HTTP status {}", response.status()));
-        }
-
-        let bytes = response.bytes()
-            .await
-            .map_err(|e| format!("Failed to read response bytes: {}", e))?;
+        let bytes = match bytes {
+            Some(b) => b,
+            None => return Err(last_err),
+        };
 
         let mut hasher = Sha1::new();
         hasher.update(&bytes);
