@@ -4,6 +4,12 @@ All notable changes to the `amae` package manager will be documented in this fil
 
 ---
 
+## [0.8.2] - 2026-06-13
+### Added
+- **`amae --version` / `amae -V` flag**: Displays the current amae version. Previously the version was not accessible from the CLI.
+
+---
+
 ## [0.8.0] - 2026-06-13
 ### Added
 - **`amae why <package>` command**: Recursively traces the dependency graph backwards and prints all paths from the root (or workspace packages) explaining why the specified package is installed. Includes clean color formatting.

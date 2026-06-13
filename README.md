@@ -39,6 +39,7 @@ Prebuilt native binaries ship for:
 ## Usage
 
 ```sh
+amae --version                   # Show amae version
 amae install                     # Install all dependencies from package.json
 amae install --frozen-lockfile   # Fail if lockfile is out of sync or missing (CI)
 amae install --production        # Skip devDependencies (production builds)

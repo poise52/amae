@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "amae")]
-#[command(about = "A ultra-fast Rust-based package manager for JS/TS", long_about = None)]
+#[command(version, about = "A ultra-fast Rust-based package manager for JS/TS", long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
