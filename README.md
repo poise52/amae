@@ -39,16 +39,23 @@ Prebuilt native binaries ship for:
 ## Usage
 
 ```sh
-amae install          # Install all dependencies from package.json
-amae add axios        # Add a package and install
-amae add -D vitest    # Add a dev dependency
-amae remove axios     # Remove a package and reinstall
-amae run build        # Run a script from package.json
-amae test             # Run the "test" script
-amae start            # Run the "start" script
-amae list             # List installed packages with resolved versions
-amae clean            # Delete node_modules and lockfile
-amae prune            # Clear the global ~/.amae/store cache
+amae install                     # Install all dependencies from package.json
+amae install --frozen-lockfile   # Fail if lockfile is out of sync or missing (CI)
+amae install --production        # Skip devDependencies (production builds)
+amae add axios                   # Add a package and install
+amae add -D vitest               # Add a dev dependency
+amae remove axios                # Remove a package and reinstall
+amae update                      # Update all dependencies to their latest versions (semver)
+amae update axios                # Update a specific package and its transitives
+amae outdated                    # List dependencies that are out of date
+amae why axios                   # Traces and prints why a package is installed
+amae completions zsh             # Generate shell completion scripts (bash/zsh/fish...)
+amae run build                   # Run a script from package.json
+amae test                        # Run the "test" script
+amae start                       # Run the "start" script
+amae list                        # List installed packages with resolved versions
+amae clean                       # Delete node_modules and lockfile
+amae prune                       # Clear the global ~/.amae/store cache
 ```
 
 ---
