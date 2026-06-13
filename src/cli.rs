@@ -21,6 +21,9 @@ pub enum Commands {
         /// Specific package to update
         package: Option<String>,
     },
+
+    /// Show outdated dependencies
+    Outdated,
     
     /// Add a new dependency
     Add {

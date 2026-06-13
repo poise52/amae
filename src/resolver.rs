@@ -121,7 +121,7 @@ impl Resolver {
         }
     }
 
-    fn matches_range(version: &Version, range_str: &str, dist_tags: &BTreeMap<String, String>) -> bool {
+    pub fn matches_range(version: &Version, range_str: &str, dist_tags: &BTreeMap<String, String>) -> bool {
         if let Some(target_ver) = dist_tags.get(range_str) {
             if let Ok(parsed_target) = Version::parse(target_ver) {
                 return version == &parsed_target;

@@ -41,6 +41,12 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Outdated => {
+            if let Err(e) = handle_outdated(&project_dir).await {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
         Commands::Add { package, dev } => {
             if let Err(e) = handle_add(&project_dir, &package, dev).await {
                 eprintln!("Error: {}", e);
@@ -421,6 +427,190 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
     linker.link(&resolved_packages, &direct_resolved)?;
     linker.run_lifecycle_scripts(&resolved_packages, &direct_resolved)?;
     println!("Successfully updated dependencies.");
+    Ok(())
+}
+
+async fn handle_outdated(project_dir: &Path) -> Result<(), String> {
+    let pkg = PackageJson::read_from_dir(project_dir)?;
+    let lock_path = project_dir.join("amae-lock.bin");
+    if !lock_path.exists() {
+        return Err("No lockfile found. Please run 'amae install' first.".to_string());
+    }
+
+    let lockfile = Lockfile::read_from_file(&lock_path)?;
+    let resolved_packages: HashMap<String, resolver::ResolvedPackage> = lockfile.packages.into_iter().collect();
+
+    let npmrc = Arc::new(npmrc::Npmrc::load());
+    let workspace = Arc::new(workspace::Workspace::load(project_dir));
+
+    let is_skipped_specifier = |v: &str| {
+        v.starts_with("file:")
+            || v.starts_with("link:")
+            || v.starts_with("git+")
+            || v.starts_with("git:")
+            || v.starts_with("https:")
+            || v.starts_with("http:")
+            || v.starts_with('/')
+            || v.starts_with('.')
+    };
+
+    let mut targets = Vec::new();
+    for (name, range) in pkg.dependencies.iter().chain(pkg.dev_dependencies.iter()) {
+        if is_skipped_specifier(range) {
+            continue;
+        }
+        targets.push((name.clone(), range.clone()));
+    }
+
+    let mut packages_to_check = Vec::new();
+    for (name, range) in targets {
+        let (real_name, real_range) = Resolver::parse_alias(&name, &range);
+        if workspace.members.contains_key(&real_name) {
+            continue;
+        }
+
+        let mut current_version = None;
+        for key in resolved_packages.keys() {
+            if key.starts_with(&format!("{}@", name)) {
+                if let Some(resolved) = resolved_packages.get(key) {
+                    current_version = Some(resolved.version.clone());
+                    break;
+                }
+            }
+        }
+
+        packages_to_check.push((name, real_name, real_range, current_version));
+    }
+
+    if packages_to_check.is_empty() {
+        println!("No external dependencies to check.");
+        return Ok(());
+    }
+
+    println!("Checking for outdated dependencies...");
+
+    let client = Arc::new(reqwest::Client::new());
+    let mut handles = Vec::new();
+
+    for (dep_name, real_name, real_range, current_version) in packages_to_check {
+        let client_clone = client.clone();
+        let npmrc_clone = npmrc.clone();
+
+        handles.push(tokio::spawn(async move {
+            let url_encoded_name = real_name.replace('/', "%2f");
+            let registry = &npmrc_clone.registry;
+            let url = format!("{}/{}", registry.trim_end_matches('/'), url_encoded_name);
+
+            let mut response = None;
+            for attempt in 0..3 {
+                if attempt > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(500 * 2u64.pow(attempt - 1))).await;
+                }
+
+                let mut req = client_clone.get(&url)
+                    .header("Accept", "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8");
+                if let Some(token) = npmrc_clone.get_token(&url) {
+                    req = req.header("Authorization", format!("Bearer {}", token));
+                }
+
+                match req.send().await {
+                    Ok(res) => {
+                        response = Some(res);
+                        break;
+                    }
+                    Err(_) => {}
+                }
+            }
+
+            let res = match response {
+                Some(r) => r,
+                None => return Err(format!("Network error fetching metadata for {}", real_name)),
+            };
+
+            if res.status() == 404 {
+                return Err(format!("Package not found: {}", real_name));
+            }
+
+            let metadata: resolver::RegistryPackage = res.json()
+                .await
+                .map_err(|e| format!("Failed to parse metadata for {}: {}", real_name, e))?;
+
+            let latest = metadata.dist_tags.get("latest").cloned().unwrap_or_else(|| "unknown".to_string());
+
+            let mut wanted = "unknown".to_string();
+            for (ver_str, _) in metadata.versions.iter().rev() {
+                if let Ok(ver) = semver::Version::parse(ver_str) {
+                    if Resolver::matches_range(&ver, &real_range, &metadata.dist_tags) {
+                        wanted = ver_str.clone();
+                        break;
+                    }
+                }
+            }
+
+            Ok((dep_name, current_version.unwrap_or_else(|| "missing".to_string()), wanted, latest))
+        }));
+    }
+
+    let mut outdated_packages = Vec::new();
+    for handle in handles {
+        match handle.await {
+            Ok(Ok((name, current, wanted, latest))) => {
+                if current != latest || current != wanted {
+                    outdated_packages.push((name, current, wanted, latest));
+                }
+            }
+            Ok(Err(e)) => {
+                eprintln!("Warning: {}", e);
+            }
+            Err(_) => {
+                eprintln!("Warning: task join error");
+            }
+        }
+    }
+
+    if outdated_packages.is_empty() {
+        println!("All dependencies are up to date.");
+        return Ok(());
+    }
+
+    let mut name_width = 7;
+    let mut current_width = 7;
+    let mut wanted_width = 6;
+    let mut latest_width = 6;
+
+    for (name, current, wanted, latest) in &outdated_packages {
+        name_width = name_width.max(name.len());
+        current_width = current_width.max(current.len());
+        wanted_width = wanted_width.max(wanted.len());
+        latest_width = latest_width.max(latest.len());
+    }
+
+    println!(
+        "{:<nw$}  {:<cw$}  {:<ww$}  {:<lw$}",
+        "Package",
+        "Current",
+        "Wanted",
+        "Latest",
+        nw = name_width,
+        cw = current_width,
+        ww = wanted_width,
+        lw = latest_width
+    );
+
+    for (name, current, wanted, latest) in outdated_packages {
+        println!(
+            "{:<nw$}  {:<cw$}  {:<ww$}  {:<lw$}",
+            name,
+            current,
+            wanted,
+            latest,
+            nw = name_width,
+            cw = current_width,
+            ww = wanted_width,
+            lw = latest_width
+        );
+    }
+
     Ok(())
 }
 
