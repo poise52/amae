@@ -4,6 +4,16 @@ All notable changes to the `amae` package manager will be documented in this fil
 
 ---
 
+## [0.9.6] - 2026-06-14
+### Performance
+- **4x faster dependency resolution**: Deduplicate concurrent metadata fetches using `OnceCell` — if 50 packages depend on `lodash`, only one HTTP request is made instead of 50.
+- **4x higher concurrency**: Increased parallel network connections from 16 → 64 for both registry queries and tarball downloads.
+- **HTTP client tuning**: Connection pooling (`pool_max_idle_per_host=64`), TCP keep-alive, and connect timeouts to reuse connections.
+- **Skip peer dependencies**: Peer deps are no longer resolved/downloaded by default (matches pnpm behavior), eliminating hundreds of unnecessary packages.
+- **Fixed progress bar**: Now updates on package completion instead of start, so it no longer appears frozen.
+
+---
+
 ## [0.9.5] - 2026-06-13
 ### Added
 - **`--ignore-scripts` flag**: Skip executing package lifecycle scripts (`preinstall`, `install`, `postinstall`). This brings `amae` in line with other package managers when testing benchmarks without native build penalties.

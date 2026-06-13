@@ -5,6 +5,7 @@ use semver::{Version, VersionReq};
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT};
 use futures_util::future::BoxFuture;
 use tokio::sync::Semaphore;
+use tokio::sync::OnceCell as TokioOnceCell;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct RegistryPackage {
@@ -47,11 +48,17 @@ pub struct ResolvedPackage {
     pub is_optional: bool,
 }
 
+/// Holds a lazily-initialized, deduplicated registry metadata result.
+/// Multiple concurrent resolve calls for the same package will share one HTTP
+/// request instead of each firing its own.
+type MetadataCell = Arc<TokioOnceCell<Result<Arc<RegistryPackage>, String>>>;
+
 pub struct Resolver {
     client: reqwest::Client,
     npmrc: Arc<crate::npmrc::Npmrc>,
     pub workspace: Arc<crate::workspace::Workspace>,
-    metadata_cache: Arc<RwLock<HashMap<String, Arc<RegistryPackage>>>>,
+    /// Deduplicates concurrent metadata fetches for the same package name.
+    metadata_cells: Arc<std::sync::Mutex<HashMap<String, MetadataCell>>>,
     pub resolved_graph: Arc<RwLock<HashMap<String, ResolvedPackage>>>,
     /// Limits concurrent registry HTTP requests to avoid connection overload
     sem: Arc<Semaphore>,
@@ -63,7 +70,7 @@ impl Clone for Resolver {
             client: self.client.clone(),
             npmrc: self.npmrc.clone(),
             workspace: self.workspace.clone(),
-            metadata_cache: self.metadata_cache.clone(),
+            metadata_cells: self.metadata_cells.clone(),
             resolved_graph: self.resolved_graph.clone(),
             sem: self.sem.clone(),
         }
@@ -80,6 +87,11 @@ impl Resolver {
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
+            .pool_max_idle_per_host(64)
+            .pool_idle_timeout(std::time::Duration::from_secs(30))
+            .tcp_keepalive(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(60))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -87,9 +99,9 @@ impl Resolver {
             client,
             npmrc,
             workspace,
-            metadata_cache: Arc::new(RwLock::new(HashMap::new())),
+            metadata_cells: Arc::new(std::sync::Mutex::new(HashMap::new())),
             resolved_graph: Arc::new(RwLock::new(HashMap::new())),
-            sem: Arc::new(Semaphore::new(16)),
+            sem: Arc::new(Semaphore::new(64)),
         }
     }
 
@@ -185,19 +197,38 @@ impl Resolver {
         false
     }
 
-    async fn fetch_package_metadata(
+    /// Fetches package metadata with deduplication.  If multiple resolve tasks
+    /// request the same package concurrently, only one HTTP request is issued;
+    /// all other callers await the same result.
+    async fn fetch_metadata(&self, name: &str) -> Result<Arc<RegistryPackage>, String> {
+        // Get or create the OnceCell for this package
+        let cell = {
+            let mut cells = self.metadata_cells.lock().unwrap();
+            cells.entry(name.to_string())
+                .or_insert_with(|| Arc::new(TokioOnceCell::new()))
+                .clone()
+        };
+
+        let client = self.client.clone();
+        let npmrc = self.npmrc.clone();
+        let sem = self.sem.clone();
+        let name_owned = name.to_string();
+
+        // Only the first caller actually executes the fetch; all others wait.
+        let result = cell.get_or_init(|| async move {
+            Self::do_fetch_metadata(client, npmrc, sem, name_owned).await
+        }).await;
+
+        result.clone()
+    }
+
+    /// Performs the actual HTTP request to the npm registry with retries.
+    async fn do_fetch_metadata(
         client: reqwest::Client,
         npmrc: Arc<crate::npmrc::Npmrc>,
-        metadata_cache: Arc<RwLock<HashMap<String, Arc<RegistryPackage>>>>,
         sem: Arc<Semaphore>,
         name: String,
     ) -> Result<Arc<RegistryPackage>, String> {
-        if let Ok(cache) = metadata_cache.read() {
-            if let Some(pkg) = cache.get(&name) {
-                return Ok(pkg.clone());
-            }
-        }
-
         let url_encoded_name = name.replace('/', "%2f");
         let registry = npmrc.get_registry_for_package(&name);
         let url = format!("{}/{}", registry.trim_end_matches('/'), url_encoded_name);
@@ -235,11 +266,7 @@ impl Resolver {
                 }
             };
 
-            let pkg_arc = Arc::new(pkg);
-            if let Ok(mut cache) = metadata_cache.write() {
-                cache.insert(name, pkg_arc.clone());
-            }
-            return Ok(pkg_arc);
+            return Ok(Arc::new(pkg));
         }
 
         Err(last_err)
@@ -355,13 +382,7 @@ impl Resolver {
                 }
             }
 
-            let metadata = Self::fetch_package_metadata(
-                self.client.clone(),
-                self.npmrc.clone(),
-                self.metadata_cache.clone(),
-                self.sem.clone(),
-                real_name.clone(),
-            ).await?;
+            let metadata = self.fetch_metadata(&real_name).await?;
 
             let (version, deps, tarball_url, shasum, optional_deps_keys) = {
                 let mut matched_version: Option<(&String, &RegistryVersion)> = None;
@@ -383,9 +404,7 @@ impl Resolver {
                 for (k, v) in &ver_info.optional_dependencies {
                     combined_deps.insert(k.clone(), v.clone());
                 }
-                for (k, v) in &ver_info.peer_dependencies {
-                    combined_deps.insert(k.clone(), v.clone());
-                }
+                // Peer dependencies are NOT installed by default (matches pnpm behavior)
 
                 let optional_keys: std::collections::HashSet<String> = ver_info.optional_dependencies.keys().cloned().collect();
 

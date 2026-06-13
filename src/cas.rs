@@ -28,7 +28,7 @@ impl Cas {
         Self {
             store_dir,
             tmp_dir,
-            download_sem: tokio::sync::Semaphore::new(16),
+            download_sem: tokio::sync::Semaphore::new(64),
         }
     }
 
@@ -39,7 +39,7 @@ impl Cas {
         Self {
             store_dir,
             tmp_dir,
-            download_sem: tokio::sync::Semaphore::new(16),
+            download_sem: tokio::sync::Semaphore::new(64),
         }
     }
 

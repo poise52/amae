@@ -169,7 +169,15 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
         Some(dir) => cas::Cas::with_store_dir(std::path::PathBuf::from(dir)),
         None => cas::Cas::new(),
     });
-    let client = Arc::new(reqwest::Client::new());
+    let client = Arc::new(
+        reqwest::Client::builder()
+            .pool_max_idle_per_host(64)
+            .pool_idle_timeout(std::time::Duration::from_secs(30))
+            .tcp_keepalive(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    );
     let mut download_handles = Vec::new();
 
     for pkg in external_packages {
@@ -184,8 +192,8 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
         let is_optional = pkg.is_optional;
 
         download_handles.push(tokio::spawn(async move {
-            pb_clone.set_message(format!("{}@{}", name, version));
             let res = cas_clone.download_and_extract(&client_clone, &npmrc_clone, &name, &version, &tarball_url, &shasum).await;
+            pb_clone.set_message(format!("{}@{}", name, version));
             pb_clone.inc(1);
             (name, version, res, is_optional)
         }));
