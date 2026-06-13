@@ -17,85 +17,33 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 use indicatif::{ProgressBar, ProgressStyle};
+use console::style;
 
 #[tokio::main]
 async fn main() {
+    if let Err(e) = run_app().await {
+        eprintln!("{}: {}", style("Error").red().bold(), e);
+        std::process::exit(1);
+    }
+}
+
+async fn run_app() -> Result<(), String> {
     let args = Cli::parse();
     let project_dir = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
 
     match args.command {
-        Commands::Init => {
-            if let Err(e) = handle_init(&project_dir) {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        Commands::Install { frozen_lockfile, production } => {
-            if let Err(e) = handle_install(&project_dir, frozen_lockfile, production).await {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        Commands::Update { package } => {
-            if let Err(e) = handle_update(&project_dir, &package).await {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        Commands::Outdated => {
-            if let Err(e) = handle_outdated(&project_dir).await {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        Commands::Add { package, dev } => {
-            if let Err(e) = handle_add(&project_dir, &package, dev).await {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        Commands::Remove { package } => {
-            if let Err(e) = handle_remove(&project_dir, &package).await {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        Commands::Run { script } => {
-            if let Err(e) = handle_run(&project_dir, &script).await {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        Commands::Test => {
-            if let Err(e) = handle_run(&project_dir, "test").await {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        Commands::Start => {
-            if let Err(e) = handle_run(&project_dir, "start").await {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        Commands::Clean => {
-            if let Err(e) = handle_clean(&project_dir) {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        Commands::List => {
-            if let Err(e) = handle_list(&project_dir) {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        Commands::Prune => {
-            if let Err(e) = handle_prune() {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
+        Commands::Init => handle_init(&project_dir),
+        Commands::Install { frozen_lockfile, production } => handle_install(&project_dir, frozen_lockfile, production).await,
+        Commands::Update { package } => handle_update(&project_dir, &package).await,
+        Commands::Outdated => handle_outdated(&project_dir).await,
+        Commands::Add { package, dev } => handle_add(&project_dir, &package, dev).await,
+        Commands::Remove { package } => handle_remove(&project_dir, &package).await,
+        Commands::Run { script } => handle_run(&project_dir, &script).await,
+        Commands::Test => handle_run(&project_dir, "test").await,
+        Commands::Start => handle_run(&project_dir, "start").await,
+        Commands::Clean => handle_clean(&project_dir),
+        Commands::List => handle_list(&project_dir),
+        Commands::Prune => handle_prune(),
     }
 }
 
@@ -115,7 +63,7 @@ fn handle_init(project_dir: &Path) -> Result<(), String> {
     };
 
     default_pkg.write_to_dir(project_dir)?;
-    println!("Initialized package.json");
+    println!("{}", style("Initialized package.json").green().bold());
     Ok(())
 }
 
@@ -172,7 +120,7 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
     let resolved_packages: HashMap<String, resolver::ResolvedPackage>;
 
     if lock_path.exists() {
-        println!("Found lockfile. Reading dependencies...");
+        println!("{}", style("Found lockfile. Reading dependencies...").cyan());
         let lockfile = Lockfile::read_from_file(&lock_path)?;
         
         let mut match_ok = true;
@@ -189,7 +137,7 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
             if frozen_lockfile {
                 return Err("amae-lock.bin is out of sync with package.json, but --frozen-lockfile was specified".to_string());
             }
-            println!("Lockfile out of date. Resolving dependencies...");
+            println!("{}", style("Lockfile out of date. Resolving dependencies...").yellow());
             resolved_packages = run_resolver(&all_direct_deps, npmrc.clone(), workspace.clone()).await?;
             let lockfile = Lockfile::new(all_direct_deps.clone(), resolved_packages.clone());
             lockfile.write_to_file(&lock_path)?;
@@ -198,7 +146,7 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
         if frozen_lockfile {
             return Err("amae-lock.bin not found, but --frozen-lockfile was specified".to_string());
         }
-        println!("Resolving dependencies...");
+        println!("{}", style("Resolving dependencies...").cyan().bold());
         resolved_packages = run_resolver(&all_direct_deps, npmrc.clone(), workspace.clone()).await?;
         let lockfile = Lockfile::new(all_direct_deps.clone(), resolved_packages.clone());
         lockfile.write_to_file(&lock_path)?;
@@ -242,7 +190,7 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
     }
     pb.finish_and_clear();
 
-    println!("Linking dependencies...");
+    println!("{}", style("Linking dependencies...").cyan().bold());
     let linker = Linker::new(project_dir, workspace.clone());
     linker.prepare()?;
 
@@ -264,7 +212,7 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
 
     linker.link(&resolved_packages, &direct_resolved)?;
     linker.run_lifecycle_scripts(&resolved_packages, &direct_resolved)?;
-    println!("Successfully installed dependencies.");
+    println!("{}", style("Successfully installed dependencies.").green().bold());
     Ok(())
 }
 
@@ -318,14 +266,14 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
 
     match package_to_update {
         None => {
-            println!("Updating all dependencies...");
+            println!("{}", style("Updating all dependencies...").cyan().bold());
             resolved_packages = run_resolver(&all_direct_deps, npmrc.clone(), workspace.clone()).await?;
             let lockfile = Lockfile::new(all_direct_deps.clone(), resolved_packages.clone());
             lockfile.write_to_file(&lock_path)?;
         }
         Some(pkg_name) => {
             if lock_path.exists() {
-                println!("Updating package {} and its transitive dependencies...", pkg_name);
+                println!("{}", style(format!("Updating package {} and its transitive dependencies...", pkg_name)).cyan().bold());
                 let lockfile = Lockfile::read_from_file(&lock_path)?;
                 let mut prepopulated: HashMap<String, resolver::ResolvedPackage> = lockfile.packages.into_iter().collect();
 
@@ -393,7 +341,7 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
                 let lockfile = Lockfile::new(all_direct_deps.clone(), resolved_packages.clone());
                 lockfile.write_to_file(&lock_path)?;
             } else {
-                println!("No lockfile found. Resolving all dependencies...");
+                println!("{}", style("No lockfile found. Resolving all dependencies...").yellow());
                 resolved_packages = run_resolver(&all_direct_deps, npmrc.clone(), workspace.clone()).await?;
                 let lockfile = Lockfile::new(all_direct_deps.clone(), resolved_packages.clone());
                 lockfile.write_to_file(&lock_path)?;
@@ -439,7 +387,7 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
     }
     pb.finish_and_clear();
 
-    println!("Linking dependencies...");
+    println!("{}", style("Linking dependencies...").cyan().bold());
     let linker = Linker::new(project_dir, workspace.clone());
     linker.prepare()?;
 
@@ -461,7 +409,7 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
 
     linker.link(&resolved_packages, &direct_resolved)?;
     linker.run_lifecycle_scripts(&resolved_packages, &direct_resolved)?;
-    println!("Successfully updated dependencies.");
+    println!("{}", style("Successfully updated dependencies.").green().bold());
     Ok(())
 }
 
@@ -522,7 +470,7 @@ async fn handle_outdated(project_dir: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    println!("Checking for outdated dependencies...");
+    println!("{}", style("Checking for outdated dependencies...").cyan());
 
     let client = Arc::new(reqwest::Client::new());
     let mut handles = Vec::new();
@@ -595,16 +543,16 @@ async fn handle_outdated(project_dir: &Path) -> Result<(), String> {
                 }
             }
             Ok(Err(e)) => {
-                eprintln!("Warning: {}", e);
+                eprintln!("{}: {}", style("Warning").yellow().bold(), e);
             }
             Err(_) => {
-                eprintln!("Warning: task join error");
+                eprintln!("{}: task join error", style("Warning").yellow().bold());
             }
         }
     }
 
     if outdated_packages.is_empty() {
-        println!("All dependencies are up to date.");
+        println!("{}", style("All dependencies are up to date.").green().bold());
         return Ok(());
     }
 
@@ -620,30 +568,48 @@ async fn handle_outdated(project_dir: &Path) -> Result<(), String> {
         latest_width = latest_width.max(latest.len());
     }
 
+    let pkg_header = format!("{:<nw$}", "Package", nw = name_width);
+    let current_header = format!("{:<cw$}", "Current", cw = current_width);
+    let wanted_header = format!("{:<ww$}", "Wanted", ww = wanted_width);
+    let latest_header = format!("{:<lw$}", "Latest", lw = latest_width);
+
     println!(
-        "{:<nw$}  {:<cw$}  {:<ww$}  {:<lw$}",
-        "Package",
-        "Current",
-        "Wanted",
-        "Latest",
-        nw = name_width,
-        cw = current_width,
-        ww = wanted_width,
-        lw = latest_width
+        "{}  {}  {}  {}",
+        style(pkg_header).bold().underlined(),
+        style(current_header).bold().underlined(),
+        style(wanted_header).bold().underlined(),
+        style(latest_header).bold().underlined()
     );
 
     for (name, current, wanted, latest) in outdated_packages {
-        println!(
-            "{:<nw$}  {:<cw$}  {:<ww$}  {:<lw$}",
-            name,
-            current,
-            wanted,
-            latest,
-            nw = name_width,
-            cw = current_width,
-            ww = wanted_width,
-            lw = latest_width
-        );
+        let is_red = if let (Ok(c), Ok(w)) = (semver::Version::parse(&current), semver::Version::parse(&wanted)) {
+            c < w
+        } else {
+            current != wanted
+        };
+
+        let pkg_str = format!("{:<nw$}", name, nw = name_width);
+        let current_str = format!("{:<cw$}", current, cw = current_width);
+        let wanted_str = format!("{:<ww$}", wanted, ww = wanted_width);
+        let latest_str = format!("{:<lw$}", latest, lw = latest_width);
+
+        if is_red {
+            println!(
+                "{}  {}  {}  {}",
+                style(pkg_str).red(),
+                style(current_str).red(),
+                style(wanted_str).green(),
+                style(latest_str).magenta()
+            );
+        } else {
+            println!(
+                "{}  {}  {}  {}",
+                style(pkg_str).yellow(),
+                style(current_str).yellow(),
+                style(wanted_str).yellow(),
+                style(latest_str).magenta()
+            );
+        }
     }
 
     Ok(())
@@ -699,7 +665,7 @@ async fn handle_add(project_dir: &Path, package_name: &str, dev: bool) -> Result
         PackageJson::read_from_dir(project_dir)?
     };
 
-    println!("Fetching package metadata for {}...", package_name);
+    println!("{}", style(format!("Fetching package metadata for {}...", package_name)).cyan());
     let (name, range) = if package_name.contains('@') && !package_name.starts_with('@') {
         let parts: Vec<&str> = package_name.split('@').collect();
         (parts[0].to_string(), parts[1].to_string())
@@ -735,7 +701,7 @@ async fn handle_add(project_dir: &Path, package_name: &str, dev: bool) -> Result
         (package_name.to_string(), format!("^{}", latest_version))
     };
 
-    println!("Adding {}@{} to package.json", name, range);
+    println!("{}", style(format!("Adding {}@{} to package.json", name, range)).cyan());
     if dev {
         pkg.dev_dependencies.insert(name, range);
     } else {
@@ -762,7 +728,7 @@ async fn handle_remove(project_dir: &Path, package_name: &str) -> Result<(), Str
     }
 
     pkg.write_to_dir(project_dir)?;
-    println!("Removed {} from package.json", package_name);
+    println!("{}", style(format!("Removed {} from package.json", package_name)).green().bold());
 
     let lock_path = project_dir.join("amae-lock.bin");
     if lock_path.exists() {
@@ -782,7 +748,7 @@ async fn handle_run(project_dir: &Path, script_name: &str) -> Result<(), String>
     let cmd_str = pkg.scripts.get(script_name)
         .ok_or_else(|| format!("Script '{}' not found in package.json", script_name))?;
 
-    println!("> {}", cmd_str);
+    println!("> {}", style(cmd_str).dim());
 
     let local_bin = project_dir.join("node_modules").join(".bin");
     let mut path_val = std::env::var_os("PATH").unwrap_or_default();
@@ -836,15 +802,15 @@ async fn handle_run(project_dir: &Path, script_name: &str) -> Result<(), String>
 fn handle_clean(project_dir: &Path) -> Result<(), String> {
     let node_modules = project_dir.join("node_modules");
     if node_modules.exists() {
-        println!("Cleaning node_modules...");
+        println!("{}", style("Cleaning node_modules...").cyan());
         std::fs::remove_dir_all(&node_modules).map_err(|e| format!("Failed to remove node_modules: {}", e))?;
     }
     let lock_path = project_dir.join("amae-lock.bin");
     if lock_path.exists() {
-        println!("Cleaning amae-lock.bin...");
+        println!("{}", style("Cleaning amae-lock.bin...").cyan());
         std::fs::remove_file(&lock_path).map_err(|e| format!("Failed to remove lockfile: {}", e))?;
     }
-    println!("Cleaned project directories successfully.");
+    println!("{}", style("Cleaned project directories successfully.").green().bold());
     Ok(())
 }
 
@@ -852,7 +818,7 @@ fn handle_list(project_dir: &Path) -> Result<(), String> {
     let pkg = PackageJson::read_from_dir(project_dir)?;
     let name = pkg.name.unwrap_or_else(|| "unnamed".to_string());
     let version = pkg.version.unwrap_or_else(|| "0.0.0".to_string());
-    println!("{}@{} {}", name, version, project_dir.display());
+    println!("{}@{} {}", style(name).bold(), style(version).bold(), style(project_dir.display()).dim());
 
     let lock_path = project_dir.join("amae-lock.bin");
     let resolved_map = if lock_path.exists() {
@@ -878,10 +844,27 @@ fn handle_list(project_dir: &Path) -> Result<(), String> {
                 None
             };
 
-            if let Some(ver) = actual_ver {
-                println!("├── {}@{} (resolved to {}){}", dep_name, dep_range, ver, if is_dev { " [dev]" } else { "" });
+            let dev_suffix = if is_dev {
+                format!(" {}", style("[dev]").magenta())
             } else {
-                println!("├── {}@{}{}", dep_name, dep_range, if is_dev { " [dev]" } else { "" });
+                "".to_string()
+            };
+
+            if let Some(ver) = actual_ver {
+                println!(
+                    "├── {}@{} (resolved to {}){}",
+                    style(dep_name).cyan(),
+                    dep_range,
+                    style(ver).green(),
+                    dev_suffix
+                );
+            } else {
+                println!(
+                    "├── {}@{}{}",
+                    style(dep_name).cyan(),
+                    dep_range,
+                    dev_suffix
+                );
             }
         }
     };
@@ -894,7 +877,7 @@ fn handle_list(project_dir: &Path) -> Result<(), String> {
 
 fn handle_prune() -> Result<(), String> {
     let cas = cas::Cas::new();
-    println!("Pruning global store at {}...", cas.store_dir.display());
+    println!("{}", style(format!("Pruning global store at {}...", cas.store_dir.display())).cyan());
 
     #[cfg(unix)]
     {
@@ -914,7 +897,7 @@ fn handle_prune() -> Result<(), String> {
     std::fs::create_dir_all(&cas.store_dir)
         .map_err(|e| format!("Failed to recreate global store: {}", e))?;
 
-    println!("Successfully pruned global CAS store.");
+    println!("{}", style("Successfully pruned global CAS store.").green().bold());
     Ok(())
 }
 

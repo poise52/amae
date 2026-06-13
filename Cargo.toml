@@ -1,6 +1,6 @@
 [package]
 name = "amae"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 
 [dependencies]
@@ -19,3 +19,4 @@ futures-util = "0.3"
 directories = "5.0"
 tempfile = "3.8"
 indicatif = "0.17"
+console = "0.15"

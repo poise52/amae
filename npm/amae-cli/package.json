@@ -1,6 +1,6 @@
 {
   "name": "amae-cli",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Ultra-fast package manager for JS/TS written in Rust",
   "bin": {
     "amae": "bin/amae"
@@ -13,9 +13,9 @@
   ],
   "license": "MIT",
   "optionalDependencies": {
-    "amae-darwin-arm64": "0.6.0",
-    "amae-darwin-x64": "0.6.0",
-    "amae-linux-x64": "0.6.0",
-    "amae-win32-x64": "0.6.0"
+    "amae-darwin-arm64": "0.7.0",
+    "amae-darwin-x64": "0.7.0",
+    "amae-linux-x64": "0.7.0",
+    "amae-win32-x64": "0.7.0"
   }
 }

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::collections::{HashMap, BTreeMap};
 use std::sync::Arc;
 use crate::resolver::ResolvedPackage;
+use console::style;
 
 pub struct Linker {
     node_modules_dir: PathBuf,
@@ -275,7 +276,7 @@ impl Linker {
                     continue;
                 }
 
-                println!("Running lifecycle scripts for {}@{}...", pkg.name, pkg.version);
+                println!("{}", style(format!("Running lifecycle scripts for {}@{}...", pkg.name, pkg.version)).cyan().bold());
 
                 let pkg_bin_dir = if pkg.tarball_url.starts_with("workspace:") {
                     pkg_store_dir.join("node_modules").join(".bin")
@@ -299,7 +300,7 @@ impl Linker {
                     .map_err(|e| format!("Failed to join PATH: {}", e))?;
 
                 for (name, script) in scripts_to_run {
-                    println!("  > {} ({}): {}", pkg.name, name, script);
+                    println!("  > {} ({}): {}", style(&pkg.name).dim(), style(name).dim(), style(&script).dim());
 
                     #[cfg(unix)]
                     let mut child = std::process::Command::new("sh")
@@ -345,7 +346,7 @@ impl Linker {
         }
 
         if !root_scripts.is_empty() {
-            println!("Running root lifecycle scripts...");
+            println!("{}", style("Running root lifecycle scripts...").cyan().bold());
             let root_bin_dir = self.node_modules_dir.join(".bin");
             let path_val = std::env::var_os("PATH").unwrap_or_default();
             let mut path_list = Vec::new();
@@ -359,7 +360,7 @@ impl Linker {
                 .map_err(|e| format!("Failed to join PATH: {}", e))?;
 
             for (name, script) in root_scripts {
-                println!("  > root ({}): {}", name, script);
+                println!("  > root ({}): {}", style(name).dim(), style(&script).dim());
 
                 #[cfg(unix)]
                 let mut child = std::process::Command::new("sh")
