@@ -29,8 +29,8 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Install => {
-            if let Err(e) = handle_install(&project_dir).await {
+        Commands::Install { frozen_lockfile, production } => {
+            if let Err(e) = handle_install(&project_dir, frozen_lockfile, production).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
@@ -118,7 +118,7 @@ fn handle_init(project_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-async fn handle_install(project_dir: &Path) -> Result<(), String> {
+async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: bool) -> Result<(), String> {
     let pkg = PackageJson::read_from_dir(project_dir)?;
     let lock_path = project_dir.join("amae-lock.bin");
     let npmrc = Arc::new(npmrc::Npmrc::load());
@@ -141,9 +141,11 @@ async fn handle_install(project_dir: &Path) -> Result<(), String> {
             direct_deps.insert(k.clone(), v.clone());
         }
     }
-    for (k, v) in pkg.dev_dependencies.iter() {
-        if !is_skipped_specifier(v) {
-            direct_deps.insert(k.clone(), v.clone());
+    if !production {
+        for (k, v) in pkg.dev_dependencies.iter() {
+            if !is_skipped_specifier(v) {
+                direct_deps.insert(k.clone(), v.clone());
+            }
         }
     }
 
@@ -157,9 +159,11 @@ async fn handle_install(project_dir: &Path) -> Result<(), String> {
                 all_direct_deps.insert(k.clone(), v.clone());
             }
         }
-        for (k, v) in &ws_pkg.dev_dependencies {
-            if !is_skipped_specifier(v) {
-                all_direct_deps.insert(k.clone(), v.clone());
+        if !production {
+            for (k, v) in &ws_pkg.dev_dependencies {
+                if !is_skipped_specifier(v) {
+                    all_direct_deps.insert(k.clone(), v.clone());
+                }
             }
         }
     }
@@ -181,12 +185,18 @@ async fn handle_install(project_dir: &Path) -> Result<(), String> {
         if match_ok {
             resolved_packages = lockfile.packages.into_iter().collect();
         } else {
+            if frozen_lockfile {
+                return Err("amae-lock.bin is out of sync with package.json, but --frozen-lockfile was specified".to_string());
+            }
             println!("Lockfile out of date. Resolving dependencies...");
             resolved_packages = run_resolver(&all_direct_deps, npmrc.clone(), workspace.clone()).await?;
             let lockfile = Lockfile::new(all_direct_deps.clone(), resolved_packages.clone());
             lockfile.write_to_file(&lock_path)?;
         }
     } else {
+        if frozen_lockfile {
+            return Err("amae-lock.bin not found, but --frozen-lockfile was specified".to_string());
+        }
         println!("Resolving dependencies...");
         resolved_packages = run_resolver(&all_direct_deps, npmrc.clone(), workspace.clone()).await?;
         let lockfile = Lockfile::new(all_direct_deps.clone(), resolved_packages.clone());
@@ -708,7 +718,7 @@ async fn handle_add(project_dir: &Path, package_name: &str, dev: bool) -> Result
     }
 
     pkg.write_to_dir(project_dir)?;
-    handle_install(project_dir).await
+    handle_install(project_dir, false, false).await
 }
 
 async fn handle_remove(project_dir: &Path, package_name: &str) -> Result<(), String> {
@@ -739,7 +749,7 @@ async fn handle_remove(project_dir: &Path, package_name: &str) -> Result<(), Str
         let _ = std::fs::remove_dir_all(node_modules_dir);
     }
 
-    handle_install(project_dir).await
+    handle_install(project_dir, false, false).await
 }
 
 async fn handle_run(project_dir: &Path, script_name: &str) -> Result<(), String> {

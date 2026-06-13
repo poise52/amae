@@ -14,7 +14,15 @@ pub enum Commands {
     Init,
     
     /// Install all dependencies from package.json
-    Install,
+    Install {
+        /// Fail if the lockfile is out of sync or missing
+        #[arg(long)]
+        frozen_lockfile: bool,
+
+        /// Skip devDependencies
+        #[arg(long)]
+        production: bool,
+    },
 
     /// Update dependencies to their latest versions within package.json ranges
     Update {
