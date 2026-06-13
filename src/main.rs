@@ -35,6 +35,12 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Update { package } => {
+            if let Err(e) = handle_update(&project_dir, &package).await {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
         Commands::Add { package, dev } => {
             if let Err(e) = handle_add(&project_dir, &package, dev).await {
                 eprintln!("Error: {}", e);
@@ -230,6 +236,191 @@ async fn handle_install(project_dir: &Path) -> Result<(), String> {
     linker.link(&resolved_packages, &direct_resolved)?;
     linker.run_lifecycle_scripts(&resolved_packages, &direct_resolved)?;
     println!("Successfully installed dependencies.");
+    Ok(())
+}
+
+async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -> Result<(), String> {
+    let pkg = PackageJson::read_from_dir(project_dir)?;
+    let lock_path = project_dir.join("amae-lock.bin");
+    let npmrc = Arc::new(npmrc::Npmrc::load());
+    let workspace = Arc::new(workspace::Workspace::load(project_dir));
+
+    let is_skipped_specifier = |v: &str| {
+        v.starts_with("file:")
+            || v.starts_with("link:")
+            || v.starts_with("git+")
+            || v.starts_with("git:")
+            || v.starts_with("https:")
+            || v.starts_with("http:")
+            || v.starts_with('/')
+            || v.starts_with('.')
+    };
+
+    let mut direct_deps = BTreeMap::new();
+    for (k, v) in pkg.dependencies.iter() {
+        if !is_skipped_specifier(v) {
+            direct_deps.insert(k.clone(), v.clone());
+        }
+    }
+    for (k, v) in pkg.dev_dependencies.iter() {
+        if !is_skipped_specifier(v) {
+            direct_deps.insert(k.clone(), v.clone());
+        }
+    }
+
+    let mut all_direct_deps = BTreeMap::new();
+    for (k, v) in &direct_deps {
+        all_direct_deps.insert(k.clone(), v.clone());
+    }
+    for (_, ws_pkg) in &workspace.members {
+        for (k, v) in &ws_pkg.dependencies {
+            if !is_skipped_specifier(v) {
+                all_direct_deps.insert(k.clone(), v.clone());
+            }
+        }
+        for (k, v) in &ws_pkg.dev_dependencies {
+            if !is_skipped_specifier(v) {
+                all_direct_deps.insert(k.clone(), v.clone());
+            }
+        }
+    }
+
+    let resolved_packages: HashMap<String, resolver::ResolvedPackage>;
+
+    match package_to_update {
+        None => {
+            println!("Updating all dependencies...");
+            resolved_packages = run_resolver(&all_direct_deps, npmrc.clone(), workspace.clone()).await?;
+            let lockfile = Lockfile::new(all_direct_deps.clone(), resolved_packages.clone());
+            lockfile.write_to_file(&lock_path)?;
+        }
+        Some(pkg_name) => {
+            if lock_path.exists() {
+                println!("Updating package {} and its transitive dependencies...", pkg_name);
+                let lockfile = Lockfile::read_from_file(&lock_path)?;
+                let mut prepopulated: HashMap<String, resolver::ResolvedPackage> = lockfile.packages.into_iter().collect();
+
+                let mut pkg_version = None;
+                for key in prepopulated.keys() {
+                    if key.starts_with(&format!("{}@", pkg_name)) {
+                        if let Some(resolved) = prepopulated.get(key) {
+                            pkg_version = Some(resolved.version.clone());
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(version) = pkg_version {
+                    let mut to_remove = std::collections::HashSet::new();
+                    let mut queue = std::collections::VecDeque::new();
+                    let start_key = format!("{}@{}", pkg_name, version);
+
+                    to_remove.insert(start_key.clone());
+                    queue.push_back(start_key);
+
+                    while let Some(current_key) = queue.pop_front() {
+                        if let Some(resolved_pkg) = prepopulated.get(&current_key) {
+                            for (dep_name, dep_version) in &resolved_pkg.dependencies {
+                                let dep_key = format!("{}@{}", dep_name, dep_version);
+                                if !to_remove.contains(&dep_key) {
+                                    to_remove.insert(dep_key.clone());
+                                    queue.push_back(dep_key);
+                                }
+                            }
+                        }
+                    }
+
+                    for key in to_remove {
+                        prepopulated.remove(&key);
+                    }
+                }
+
+                let resolver = Resolver::with_prepopulated_graph(npmrc.clone(), workspace.clone(), prepopulated);
+                let mut resolve_handles = Vec::new();
+
+                for (name, range) in &all_direct_deps {
+                    let resolver_clone = resolver.clone();
+                    let name = name.clone();
+                    let range = range.clone();
+                    resolve_handles.push(tokio::spawn(async move {
+                        resolver_clone.resolve(name, range).await
+                    }));
+                }
+
+                for (ws_name, ws_pkg) in &workspace.members {
+                    let resolver_clone = resolver.clone();
+                    let name = ws_name.clone();
+                    let range = format!("workspace:{}", ws_pkg.version);
+                    resolve_handles.push(tokio::spawn(async move {
+                        resolver_clone.resolve(name, range).await
+                    }));
+                }
+
+                for handle in resolve_handles {
+                    handle.await.map_err(|e| format!("Resolver thread crashed: {}", e))??;
+                }
+
+                resolved_packages = resolver.resolved_graph.read().map_err(|e| format!("Lock poisoned: {}", e))?.clone();
+                let lockfile = Lockfile::new(all_direct_deps.clone(), resolved_packages.clone());
+                lockfile.write_to_file(&lock_path)?;
+            } else {
+                println!("No lockfile found. Resolving all dependencies...");
+                resolved_packages = run_resolver(&all_direct_deps, npmrc.clone(), workspace.clone()).await?;
+                let lockfile = Lockfile::new(all_direct_deps.clone(), resolved_packages.clone());
+                lockfile.write_to_file(&lock_path)?;
+            }
+        }
+    }
+
+    println!("Downloading {} packages...", resolved_packages.len());
+    let cas = Arc::new(cas::Cas::new());
+    let client = Arc::new(reqwest::Client::new());
+    let mut download_handles = Vec::new();
+
+    for pkg in resolved_packages.values() {
+        if pkg.tarball_url.starts_with("workspace:") {
+            continue;
+        }
+        let cas_clone = cas.clone();
+        let client_clone = client.clone();
+        let npmrc_clone = npmrc.clone();
+        let name = pkg.name.clone();
+        let version = pkg.version.clone();
+        let tarball_url = pkg.tarball_url.clone();
+        let shasum = pkg.shasum.clone();
+
+        download_handles.push(tokio::spawn(async move {
+            cas_clone.download_and_extract(&client_clone, &npmrc_clone, &name, &version, &tarball_url, &shasum).await
+        }));
+    }
+
+    for handle in download_handles {
+        handle.await.map_err(|e| format!("Download thread crashed: {}", e))??;
+    }
+
+    println!("Linking dependencies...");
+    let linker = Linker::new(project_dir, workspace.clone());
+    linker.prepare()?;
+
+    let mut direct_resolved = Vec::new();
+    for (name, _) in &direct_deps {
+        let mut resolved_ver = None;
+        for (key, resolved) in &resolved_packages {
+            if key.starts_with(&format!("{}@", name)) {
+                resolved_ver = Some(resolved.version.clone());
+                break;
+            }
+        }
+        if let Some(ver) = resolved_ver {
+            direct_resolved.push((name.clone(), ver));
+        } else {
+            return Err(format!("Could not find resolved version for direct dependency {}", name));
+        }
+    }
+
+    linker.link(&resolved_packages, &direct_resolved)?;
+    linker.run_lifecycle_scripts(&resolved_packages, &direct_resolved)?;
+    println!("Successfully updated dependencies.");
     Ok(())
 }
 

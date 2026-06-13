@@ -15,6 +15,12 @@ pub enum Commands {
     
     /// Install all dependencies from package.json
     Install,
+
+    /// Update dependencies to their latest versions within package.json ranges
+    Update {
+        /// Specific package to update
+        package: Option<String>,
+    },
     
     /// Add a new dependency
     Add {

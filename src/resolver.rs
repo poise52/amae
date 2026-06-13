@@ -84,6 +84,16 @@ impl Resolver {
         }
     }
 
+    pub fn with_prepopulated_graph(
+        npmrc: Arc<crate::npmrc::Npmrc>,
+        workspace: Arc<crate::workspace::Workspace>,
+        prepopulated: HashMap<String, ResolvedPackage>,
+    ) -> Self {
+        let mut resolver = Self::new(npmrc, workspace);
+        resolver.resolved_graph = Arc::new(RwLock::new(prepopulated));
+        resolver
+    }
+
     fn check_resolved(&self, key: &str) -> bool {
         if let Ok(graph) = self.resolved_graph.read() {
             graph.contains_key(key)
