@@ -170,24 +170,15 @@ impl Cas {
     }
 }
 
-fn make_dir_read_only(dir: &std::path::Path) -> std::io::Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
+fn make_dir_read_only(dir: &std::path::Path) -> Result<(), String> {
+    for entry in fs::read_dir(dir).map_err(|e| format!("Failed to read dir: {}", e))? {
+        let entry = entry.map_err(|e| format!("Failed to get entry: {}", e))?;
         let path = entry.path();
-        let metadata = entry.metadata()?;
+        let metadata = entry.metadata().map_err(|e| format!("Failed to get metadata: {}", e))?;
         let mut perms = metadata.permissions();
 
         if metadata.is_dir() {
             make_dir_read_only(&path)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = perms.mode();
-                perms.set_mode((mode & !0o222) | 0o111);
-            }
-            #[cfg(not(unix))]
-            perms.set_readonly(true);
-            fs::set_permissions(&path, perms)?;
         } else {
             #[cfg(unix)]
             {
@@ -197,21 +188,9 @@ fn make_dir_read_only(dir: &std::path::Path) -> std::io::Result<()> {
             }
             #[cfg(not(unix))]
             perms.set_readonly(true);
-            fs::set_permissions(&path, perms)?;
+            fs::set_permissions(&path, perms).map_err(|e| format!("Failed to set permissions: {}", e))?;
         }
     }
-
-    let metadata = fs::metadata(dir)?;
-    let mut perms = metadata.permissions();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = perms.mode();
-        perms.set_mode((mode & !0o222) | 0o111);
-    }
-    #[cfg(not(unix))]
-    perms.set_readonly(true);
-    fs::set_permissions(dir, perms)?;
 
     Ok(())
 }
