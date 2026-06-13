@@ -22,6 +22,10 @@ pub enum Commands {
         /// Skip devDependencies
         #[arg(long)]
         production: bool,
+
+        /// Use a custom store directory instead of ~/.amae/store
+        #[arg(long)]
+        store_dir: Option<String>,
     },
 
     /// Update dependencies to their latest versions within package.json ranges

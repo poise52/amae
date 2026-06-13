@@ -27,6 +27,13 @@ impl Cas {
         Self { store_dir, tmp_dir }
     }
 
+    pub fn with_store_dir(store_dir: PathBuf) -> Self {
+        let tmp_dir = store_dir.join(".tmp");
+        fs::create_dir_all(&store_dir).expect("Failed to create store directory");
+        fs::create_dir_all(&tmp_dir).expect("Failed to create temporary directory");
+        Self { store_dir, tmp_dir }
+    }
+
     pub fn package_dir(&self, name: &str, version: &str) -> PathBuf {
         let escaped_name = name.replace('/', "+");
         self.store_dir.join(format!("{}@{}", escaped_name, version))
