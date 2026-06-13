@@ -196,7 +196,7 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
     pb.finish_and_clear();
 
     println!("{}", style("Linking dependencies...").cyan().bold());
-    let linker = Linker::new(project_dir, workspace.clone());
+    let linker = Linker::new(project_dir, workspace.clone(), store_dir.map(std::path::PathBuf::from));
     linker.prepare()?;
 
     let mut direct_resolved = Vec::new();
@@ -393,7 +393,7 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
     pb.finish_and_clear();
 
     println!("{}", style("Linking dependencies...").cyan().bold());
-    let linker = Linker::new(project_dir, workspace.clone());
+    let linker = Linker::new(project_dir, workspace.clone(), None);
     linker.prepare()?;
 
     let mut direct_resolved = Vec::new();

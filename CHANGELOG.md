@@ -8,6 +8,11 @@ All notable changes to the `amae` package manager will be documented in this fil
 ### Added
 - **`amae install --store-dir <path>` flag**: Allows specifying a custom local store directory instead of the default global `~/.amae/store`. Useful for isolated environments, benchmarks, and CI pipelines where the cache directory must be controlled per-run.
 
+### Fixed
+- **Resolver concurrency deadlock / infinite recursion**: Fixed by performing early insertion of resolving packages in the `resolved_graph` before traversing their dependencies. This resolves cycle issues and prevents OOM crashes on large dependency trees.
+- **Connection resets / Rate-limiting on registry requests**: Fixed by adding concurrency Semaphores limiting concurrent metadata fetches to 16 and concurrent package downloads to 16.
+- **Linker integration with custom store directory**: Passed the custom store directory correctly to the linker phase, ensuring packages are linked from the custom path instead of the default global cache.
+
 ---
 
 ## [0.8.2] - 2026-06-13

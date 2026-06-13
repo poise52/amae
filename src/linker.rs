@@ -9,16 +9,22 @@ pub struct Linker {
     node_modules_dir: PathBuf,
     store_dir: PathBuf,
     workspace: Arc<crate::workspace::Workspace>,
+    cas_store_dir: Option<PathBuf>,
 }
 
 impl Linker {
-    pub fn new<P: AsRef<Path>>(project_root: P, workspace: Arc<crate::workspace::Workspace>) -> Self {
+    pub fn new<P: AsRef<Path>>(
+        project_root: P,
+        workspace: Arc<crate::workspace::Workspace>,
+        cas_store_dir: Option<PathBuf>,
+    ) -> Self {
         let node_modules_dir = project_root.as_ref().join("node_modules");
         let store_dir = node_modules_dir.join(".store");
         Self {
             node_modules_dir,
             store_dir,
             workspace,
+            cas_store_dir,
         }
     }
 
@@ -35,7 +41,10 @@ impl Linker {
         resolved_graph: &HashMap<String, ResolvedPackage>,
         direct_deps: &[(String, String)],
     ) -> Result<(), String> {
-        let cas = crate::cas::Cas::new();
+        let cas = match &self.cas_store_dir {
+            Some(dir) => crate::cas::Cas::with_store_dir(dir.clone()),
+            None => crate::cas::Cas::new(),
+        };
         for (_, pkg) in resolved_graph.iter() {
             if pkg.tarball_url.starts_with("workspace:") {
                 continue;

@@ -4,6 +4,7 @@ use std::sync::{Arc, RwLock};
 use semver::{Version, VersionReq};
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT};
 use futures_util::future::BoxFuture;
+use tokio::sync::Semaphore;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct RegistryPackage {
@@ -48,6 +49,8 @@ pub struct Resolver {
     pub workspace: Arc<crate::workspace::Workspace>,
     metadata_cache: Arc<RwLock<HashMap<String, Arc<RegistryPackage>>>>,
     pub resolved_graph: Arc<RwLock<HashMap<String, ResolvedPackage>>>,
+    /// Limits concurrent registry HTTP requests to avoid connection overload
+    sem: Arc<Semaphore>,
 }
 
 impl Clone for Resolver {
@@ -58,6 +61,7 @@ impl Clone for Resolver {
             workspace: self.workspace.clone(),
             metadata_cache: self.metadata_cache.clone(),
             resolved_graph: self.resolved_graph.clone(),
+            sem: self.sem.clone(),
         }
     }
 }
@@ -81,6 +85,7 @@ impl Resolver {
             workspace,
             metadata_cache: Arc::new(RwLock::new(HashMap::new())),
             resolved_graph: Arc::new(RwLock::new(HashMap::new())),
+            sem: Arc::new(Semaphore::new(16)),
         }
     }
 
@@ -171,6 +176,7 @@ impl Resolver {
         client: reqwest::Client,
         npmrc: Arc<crate::npmrc::Npmrc>,
         metadata_cache: Arc<RwLock<HashMap<String, Arc<RegistryPackage>>>>,
+        sem: Arc<Semaphore>,
         name: String,
     ) -> Result<Arc<RegistryPackage>, String> {
         if let Ok(cache) = metadata_cache.read() {
@@ -183,10 +189,12 @@ impl Resolver {
         let registry = &npmrc.registry;
         let url = format!("{}/{}", registry.trim_end_matches('/'), url_encoded_name);
 
+        let _permit = sem.acquire().await.map_err(|e| format!("Semaphore error: {}", e))?;
+
         let mut last_err = String::new();
-        for attempt in 0..3u32 {
+        for attempt in 0..5u32 {
             if attempt > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(500 * 2u64.pow(attempt - 1))).await;
+                tokio::time::sleep(std::time::Duration::from_millis(300 * 2u64.pow(attempt - 1))).await;
             }
 
             let mut req = client.get(&url);
@@ -253,6 +261,17 @@ impl Resolver {
                         return Ok(ws_pkg.version.clone());
                     }
 
+                    self.insert_resolved(
+                        key.clone(),
+                        ResolvedPackage {
+                            name: real_name.clone(),
+                            version: ws_pkg.version.clone(),
+                            tarball_url: format!("workspace:{}", ws_pkg.path.display()),
+                            shasum: String::new(),
+                            dependencies: BTreeMap::new(),
+                        },
+                    );
+
                     let mut resolved_deps = BTreeMap::new();
                     let mut combined_deps = ws_pkg.dependencies.clone();
                     for (k, v) in &ws_pkg.dev_dependencies {
@@ -289,16 +308,11 @@ impl Resolver {
                         resolved_deps.insert(dep_name, resolved_ver);
                     }
 
-                    self.insert_resolved(
-                        key,
-                        ResolvedPackage {
-                            name: real_name.clone(),
-                            version: ws_pkg.version.clone(),
-                            tarball_url: format!("workspace:{}", ws_pkg.path.display()),
-                            shasum: String::new(),
-                            dependencies: resolved_deps,
-                        },
-                    );
+                    if let Ok(mut graph) = self.resolved_graph.write() {
+                        if let Some(pkg) = graph.get_mut(&key) {
+                            pkg.dependencies = resolved_deps;
+                        }
+                    }
 
                     return Ok(ws_pkg.version.clone());
                 }
@@ -308,6 +322,7 @@ impl Resolver {
                 self.client.clone(),
                 self.npmrc.clone(),
                 self.metadata_cache.clone(),
+                self.sem.clone(),
                 real_name.clone(),
             ).await?;
 
@@ -346,6 +361,17 @@ impl Resolver {
                 return Ok(version);
             }
 
+            self.insert_resolved(
+                key.clone(),
+                ResolvedPackage {
+                    name: real_name.clone(),
+                    version: version.clone(),
+                    tarball_url: tarball_url.clone(),
+                    shasum: shasum.clone(),
+                    dependencies: BTreeMap::new(),
+                },
+            );
+
             let mut resolved_deps = BTreeMap::new();
 
             let mut futures = Vec::new();
@@ -378,16 +404,11 @@ impl Resolver {
                 resolved_deps.insert(dep_name, resolved_ver);
             }
 
-            self.insert_resolved(
-                key,
-                ResolvedPackage {
-                    name: real_name.clone(),
-                    version: version.clone(),
-                    tarball_url,
-                    shasum,
-                    dependencies: resolved_deps,
-                },
-            );
+            if let Ok(mut graph) = self.resolved_graph.write() {
+                if let Some(pkg) = graph.get_mut(&key) {
+                    pkg.dependencies = resolved_deps;
+                }
+            }
 
             Ok(version)
         })

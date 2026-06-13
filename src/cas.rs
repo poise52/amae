@@ -8,6 +8,7 @@ use flate2::read::GzDecoder;
 pub struct Cas {
     pub store_dir: PathBuf,
     pub tmp_dir: PathBuf,
+    download_sem: tokio::sync::Semaphore,
 }
 
 impl Cas {
@@ -24,14 +25,22 @@ impl Cas {
         fs::create_dir_all(&store_dir).expect("Failed to create global store directory");
         fs::create_dir_all(&tmp_dir).expect("Failed to create temporary directory");
 
-        Self { store_dir, tmp_dir }
+        Self {
+            store_dir,
+            tmp_dir,
+            download_sem: tokio::sync::Semaphore::new(16),
+        }
     }
 
     pub fn with_store_dir(store_dir: PathBuf) -> Self {
         let tmp_dir = store_dir.join(".tmp");
         fs::create_dir_all(&store_dir).expect("Failed to create store directory");
         fs::create_dir_all(&tmp_dir).expect("Failed to create temporary directory");
-        Self { store_dir, tmp_dir }
+        Self {
+            store_dir,
+            tmp_dir,
+            download_sem: tokio::sync::Semaphore::new(16),
+        }
     }
 
     pub fn package_dir(&self, name: &str, version: &str) -> PathBuf {
@@ -49,10 +58,11 @@ impl Cas {
         expected_shasum: &str,
     ) -> Result<PathBuf, String> {
         let dest_dir = self.package_dir(name, version);
-        
         if dest_dir.exists() {
             return Ok(dest_dir);
         }
+
+        let _permit = self.download_sem.acquire().await.map_err(|e| format!("Download semaphore error: {}", e))?;
 
         let mut last_err = String::new();
         let mut bytes = None;
