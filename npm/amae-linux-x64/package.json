@@ -1,6 +1,6 @@
 {
   "name": "amae-linux-x64",
-  "version": "0.8.1",
+  "version": "0.9.1",
   "description": "Platform-specific binary for amae-linux-x64",
   "os": [
     "linux"
