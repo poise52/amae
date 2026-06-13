@@ -4,6 +4,23 @@ All notable changes to the `amae` package manager will be documented in this fil
 
 ---
 
+## [0.10.1] - 2026-06-14
+### Performance
+- **Inline CAS Unpacking**: Removed the slow recursive `make_dir_writable` step. We now set permissions directly on the extracted files and directories during the extraction loop.
+- **Parallel Linker via Rayon**: Replaced sequential linking with parallel rayon-powered package hardlinking.
+- **O(1) Resolver Indexing**: Introduced `name_index` to speed up in-flight version checking from O(N) linear scan to O(1) direct lookup.
+- **Tokio spawn optimization**: Used `join_all` to batch nested dependency resolutions within the same Tokio task, saving scheduling overhead.
+- **Asynchronous hashing**: Moved SHA1 calculations off the main Tokio executor to `spawn_blocking`.
+- **Lockfile memory mapping**: Implemented `memmap2` for reading `amae-lock.bin` directly from memory without copying.
+
+### Code Quality & Refactoring
+- **Code Duplication Removal**: Extracted common prefix skips to `package::is_skipped_specifier` and workspace package dependency collection to `collect_all_direct_deps`.
+- **Optimized handle_remove**: Instead of deleting the entire `node_modules` directory, we now only remove the uninstalled package symlink and lockfile, then run install to keep `.store` cache warm.
+- **Robust handle_add**: Added safe name/version parsing preventing crashes on trailing `@`.
+- **Stack Overflow Prevention**: Added a depth limit to recursive `find_paths_backwards` to protect against deep dependency trees.
+
+---
+
 ## [0.9.6] - 2026-06-14
 ### Performance
 - **4x faster dependency resolution**: Deduplicate concurrent metadata fetches using `OnceCell` — if 50 packages depend on `lodash`, only one HTTP request is made instead of 50.

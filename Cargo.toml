@@ -1,6 +1,6 @@
 [package]
 name = "amae"
-version = "0.9.6"
+version = "0.10.1"
 edition = "2024"
 
 [dependencies]
@@ -21,3 +21,5 @@ tempfile = "3.8"
 indicatif = "0.17"
 console = "0.15"
 clap_complete = "4.4"
+rayon = "1.8"
+memmap2 = "0.9"

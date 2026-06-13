@@ -64,6 +64,11 @@ impl Cas {
 
         let _permit = self.download_sem.acquire().await.map_err(|e| format!("Download semaphore error: {}", e))?;
 
+        // Re-check after semaphore acquisition to avoid racing with another download of the same package
+        if dest_dir.exists() {
+            return Ok(dest_dir);
+        }
+
         let mut last_err = String::new();
         let mut bytes = None;
 
@@ -98,9 +103,21 @@ impl Cas {
                 }
             };
 
-            let mut hasher = Sha1::new();
-            hasher.update(&b);
-            let shasum = format!("{:x}", hasher.finalize());
+            let b_clone = b.clone();
+            let shasum_res = tokio::task::spawn_blocking(move || {
+                let mut hasher = Sha1::new();
+                hasher.update(&b_clone);
+                format!("{:x}", hasher.finalize())
+            }).await;
+
+            let shasum = match shasum_res {
+                Ok(s) => s,
+                Err(e) => {
+                    last_err = format!("SHA1 hashing thread panicked: {}", e);
+                    continue;
+                }
+            };
+
             if shasum != expected_shasum {
                 last_err = format!(
                     "Integrity check failed for {}. Expected shasum {}, got {}",
@@ -126,8 +143,35 @@ impl Cas {
         let tar = GzDecoder::new(&bytes[..]);
         let mut archive = Archive::new(tar);
         
-        archive.unpack(temp_extract_dir.path())
-            .map_err(|e| format!("Failed to unpack tarball: {}", e))?;
+        for entry in archive.entries().map_err(|e| format!("Failed to read archive entries: {}", e))? {
+            let mut entry = entry.map_err(|e| format!("Failed to get archive entry: {}", e))?;
+            let path = entry.path().map_err(|e| format!("Failed to get entry path: {}", e))?;
+            let dest = temp_extract_dir.path().join(&path);
+            
+            entry.set_preserve_permissions(false);
+            entry.unpack_in(temp_extract_dir.path()).map_err(|e| format!("Failed to unpack entry: {}", e))?;
+            
+            let metadata = fs::symlink_metadata(&dest).map_err(|e| format!("Failed to get metadata for unpacked entry: {}", e))?;
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            
+            let mut perms = metadata.permissions();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = perms.mode();
+                if metadata.is_dir() {
+                    perms.set_mode(mode | 0o700);
+                } else {
+                    perms.set_mode(mode | 0o600);
+                }
+            }
+            #[cfg(not(unix))]
+            perms.set_readonly(false);
+            
+            fs::set_permissions(&dest, perms).map_err(|e| format!("Failed to set permissions for unpacked entry: {}", e))?;
+        }
 
         let entries = fs::read_dir(temp_extract_dir.path())
             .map_err(|e| format!("Failed to read temp extract directory: {}", e))?;
@@ -161,23 +205,8 @@ impl Cas {
                 }
             }
 
-            if let Err(e) = make_dir_writable(&dest_dir) {
-                return Err(format!("Failed to make package store directory writable: {}", e));
-            }
-        }
-
-        Ok(dest_dir)
-    }
-}
-
-fn make_dir_writable(dir: &std::path::Path) -> Result<(), String> {
-    for entry in fs::read_dir(dir).map_err(|e| format!("Failed to read dir: {}", e))? {
-        let entry = entry.map_err(|e| format!("Failed to get entry: {}", e))?;
-        let path = entry.path();
-        let metadata = entry.metadata().map_err(|e| format!("Failed to get metadata: {}", e))?;
-        let mut perms = metadata.permissions();
-
-        if metadata.is_dir() {
+            let metadata = fs::metadata(&dest_dir).map_err(|e| format!("Failed to get metadata for dest_dir: {}", e))?;
+            let mut perms = metadata.permissions();
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -186,33 +215,9 @@ fn make_dir_writable(dir: &std::path::Path) -> Result<(), String> {
             }
             #[cfg(not(unix))]
             perms.set_readonly(false);
-            fs::set_permissions(&path, perms.clone()).map_err(|e| format!("Failed to set permissions: {}", e))?;
-
-            make_dir_writable(&path)?;
-        } else {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = perms.mode();
-                perms.set_mode(mode | 0o600);
-            }
-            #[cfg(not(unix))]
-            perms.set_readonly(false);
-            fs::set_permissions(&path, perms).map_err(|e| format!("Failed to set permissions: {}", e))?;
+            fs::set_permissions(&dest_dir, perms).map_err(|e| format!("Failed to set permissions for dest_dir: {}", e))?;
         }
-    }
 
-    let metadata = fs::metadata(dir).map_err(|e| format!("Failed to get metadata: {}", e))?;
-    let mut perms = metadata.permissions();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = perms.mode();
-        perms.set_mode(mode | 0o700);
+        Ok(dest_dir)
     }
-    #[cfg(not(unix))]
-    perms.set_readonly(false);
-    fs::set_permissions(dir, perms).map_err(|e| format!("Failed to set permissions: {}", e))?;
-
-    Ok(())
 }

@@ -45,9 +45,12 @@ impl Linker {
             Some(dir) => crate::cas::Cas::with_store_dir(dir.clone()),
             None => crate::cas::Cas::new(),
         };
-        for (_, pkg) in resolved_graph.iter() {
+        
+        use rayon::prelude::*;
+        
+        resolved_graph.values().collect::<Vec<_>>().par_iter().map(|pkg| {
             if pkg.tarball_url.starts_with("workspace:") {
-                continue;
+                return Ok(());
             }
             let global_pkg_dir = cas.package_dir(&pkg.name, &pkg.version);
             let local_pkg_store_dir = self.local_package_store_dir(&pkg.name, &pkg.version);
@@ -58,7 +61,8 @@ impl Linker {
                 
                 self.link_dir_recursive(&global_pkg_dir, &local_pkg_store_dir)?;
             }
-        }
+            Ok(())
+        }).collect::<Result<Vec<()>, String>>()?;
 
         for (_, pkg) in resolved_graph.iter() {
             let local_pkg_node_modules = if pkg.tarball_url.starts_with("workspace:") {

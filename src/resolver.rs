@@ -60,6 +60,8 @@ pub struct Resolver {
     /// Deduplicates concurrent metadata fetches for the same package name.
     metadata_cells: Arc<std::sync::Mutex<HashMap<String, MetadataCell>>>,
     pub resolved_graph: Arc<RwLock<HashMap<String, ResolvedPackage>>>,
+    /// Index of package name -> list of keys (e.g. "foo" -> ["foo@1.0.0", "foo@2.0.0"]) in the graph
+    name_index: Arc<RwLock<HashMap<String, Vec<String>>>>,
     /// Limits concurrent registry HTTP requests to avoid connection overload
     sem: Arc<Semaphore>,
 }
@@ -72,6 +74,7 @@ impl Clone for Resolver {
             workspace: self.workspace.clone(),
             metadata_cells: self.metadata_cells.clone(),
             resolved_graph: self.resolved_graph.clone(),
+            name_index: self.name_index.clone(),
             sem: self.sem.clone(),
         }
     }
@@ -101,6 +104,7 @@ impl Resolver {
             workspace,
             metadata_cells: Arc::new(std::sync::Mutex::new(HashMap::new())),
             resolved_graph: Arc::new(RwLock::new(HashMap::new())),
+            name_index: Arc::new(RwLock::new(HashMap::new())),
             sem: Arc::new(Semaphore::new(64)),
         }
     }
@@ -111,7 +115,12 @@ impl Resolver {
         prepopulated: HashMap<String, ResolvedPackage>,
     ) -> Self {
         let mut resolver = Self::new(npmrc, workspace);
+        let mut index = HashMap::new();
+        for (key, pkg) in &prepopulated {
+            index.entry(pkg.name.clone()).or_insert_with(Vec::new).push(key.clone());
+        }
         resolver.resolved_graph = Arc::new(RwLock::new(prepopulated));
+        resolver.name_index = Arc::new(RwLock::new(index));
         resolver
     }
 
@@ -124,8 +133,12 @@ impl Resolver {
     }
 
     fn insert_resolved(&self, key: String, pkg: ResolvedPackage) {
+        let name = pkg.name.clone();
         if let Ok(mut graph) = self.resolved_graph.write() {
-            graph.insert(key, pkg);
+            graph.insert(key.clone(), pkg);
+        }
+        if let Ok(mut idx) = self.name_index.write() {
+            idx.entry(name).or_default().push(key);
         }
     }
 
@@ -277,16 +290,19 @@ impl Resolver {
             let (real_name, real_range) = Self::parse_alias(&name, &range_str);
 
             let already_resolved_version = {
-                let graph = self.resolved_graph.read().ok();
+                let graph_lock = self.resolved_graph.read().ok();
+                let idx_lock = self.name_index.read().ok();
                 let mut found = None;
-                if let Some(graph) = graph {
-                    for pkg in graph.values() {
-                        if pkg.name == real_name {
-                            if let Ok(ver) = Version::parse(&pkg.version) {
-                                let empty_tags = BTreeMap::new();
-                                if Self::matches_range(&ver, &real_range, &empty_tags) {
-                                    found = Some(pkg.version.clone());
-                                    break;
+                if let (Some(graph), Some(idx)) = (graph_lock, idx_lock) {
+                    if let Some(keys) = idx.get(&real_name) {
+                        for key in keys {
+                            if let Some(pkg) = graph.get(key) {
+                                if let Ok(ver) = Version::parse(&pkg.version) {
+                                    let empty_tags = BTreeMap::new();
+                                    if Self::matches_range(&ver, &real_range, &empty_tags) {
+                                        found = Some(pkg.version.clone());
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -347,28 +363,19 @@ impl Resolver {
                         let dep_name = dep_name.clone();
                         let dep_range = dep_range.clone();
 
-                        if dep_range.starts_with("file:")
-                            || dep_range.starts_with("link:")
-                            || dep_range.starts_with("git+")
-                            || dep_range.starts_with("git:")
-                            || dep_range.starts_with("https:")
-                            || dep_range.starts_with("http:")
-                            || dep_range.starts_with('/')
-                            || dep_range.starts_with('.')
-                        {
+                        if crate::package::is_skipped_specifier(&dep_range) {
                             continue;
                         }
 
                         let resolver_clone = self.clone();
-                        futures.push(tokio::spawn(async move {
+                        futures.push(async move {
                             let resolved_ver = resolver_clone.resolve(dep_name.clone(), dep_range, false).await;
                             (dep_name, resolved_ver)
-                        }));
+                        });
                     }
 
-                    for handle in futures {
-                        let (dep_name, resolved_ver) = handle.await
-                            .map_err(|e| format!("Task join error: {}", e))?;
+                    let results = futures_util::future::join_all(futures).await;
+                    for (dep_name, resolved_ver) in results {
                         resolved_deps.insert(dep_name, resolved_ver?);
                     }
 
@@ -449,29 +456,20 @@ impl Resolver {
                 let dep_name = dep_name.clone();
                 let dep_range = dep_range.clone();
 
-                if dep_range.starts_with("file:")
-                    || dep_range.starts_with("link:")
-                    || dep_range.starts_with("git+")
-                    || dep_range.starts_with("git:")
-                    || dep_range.starts_with("https:")
-                    || dep_range.starts_with("http:")
-                    || dep_range.starts_with('/')
-                    || dep_range.starts_with('.')
-                {
+                if crate::package::is_skipped_specifier(&dep_range) {
                     continue;
                 }
 
                 let resolver_clone = self.clone();
                 let is_dep_optional = optional_deps_keys.contains(&dep_name);
-                futures.push(tokio::spawn(async move {
+                futures.push(async move {
                     let resolved_ver = resolver_clone.resolve(dep_name.clone(), dep_range, is_dep_optional).await;
                     (dep_name, resolved_ver, is_dep_optional)
-                }));
+                });
             }
 
-            for handle in futures {
-                let (dep_name, resolved_ver, is_dep_optional) = handle.await
-                    .map_err(|e| format!("Task join error: {}", e))?;
+            let results = futures_util::future::join_all(futures).await;
+            for (dep_name, resolved_ver, is_dep_optional) in results {
                 match resolved_ver {
                     Ok(ver) => {
                         resolved_deps.insert(dep_name, ver);

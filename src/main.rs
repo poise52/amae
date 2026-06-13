@@ -69,32 +69,30 @@ fn handle_init(project_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: bool, ignore_scripts: bool, store_dir: Option<&str>) -> Result<(), String> {
-    let pkg = PackageJson::read_from_dir(project_dir)?;
-    let lock_path = project_dir.join("amae-lock.bin");
-    let npmrc = Arc::new(npmrc::Npmrc::load());
-    let workspace = Arc::new(workspace::Workspace::load(project_dir));
+fn create_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .pool_max_idle_per_host(64)
+        .pool_idle_timeout(std::time::Duration::from_secs(30))
+        .tcp_keepalive(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
 
-    let is_skipped_specifier = |v: &str| {
-        v.starts_with("file:")
-            || v.starts_with("link:")
-            || v.starts_with("git+")
-            || v.starts_with("git:")
-            || v.starts_with("https:")
-            || v.starts_with("http:")
-            || v.starts_with('/')
-            || v.starts_with('.')
-    };
-
+fn collect_all_direct_deps(
+    pkg: &PackageJson,
+    workspace: &workspace::Workspace,
+    production: bool,
+) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
     let mut direct_deps = BTreeMap::new();
     for (k, v) in pkg.dependencies.iter() {
-        if !is_skipped_specifier(v) {
+        if !package::is_skipped_specifier(v) {
             direct_deps.insert(k.clone(), v.clone());
         }
     }
     if !production {
         for (k, v) in pkg.dev_dependencies.iter() {
-            if !is_skipped_specifier(v) {
+            if !package::is_skipped_specifier(v) {
                 direct_deps.insert(k.clone(), v.clone());
             }
         }
@@ -106,18 +104,29 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
     }
     for (_, ws_pkg) in &workspace.members {
         for (k, v) in &ws_pkg.dependencies {
-            if !is_skipped_specifier(v) {
+            if !package::is_skipped_specifier(v) {
                 all_direct_deps.insert(k.clone(), v.clone());
             }
         }
         if !production {
             for (k, v) in &ws_pkg.dev_dependencies {
-                if !is_skipped_specifier(v) {
+                if !package::is_skipped_specifier(v) {
                     all_direct_deps.insert(k.clone(), v.clone());
                 }
             }
         }
     }
+
+    (direct_deps, all_direct_deps)
+}
+
+async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: bool, ignore_scripts: bool, store_dir: Option<&str>) -> Result<(), String> {
+    let pkg = PackageJson::read_from_dir(project_dir)?;
+    let lock_path = project_dir.join("amae-lock.bin");
+    let npmrc = Arc::new(npmrc::Npmrc::load());
+    let workspace = Arc::new(workspace::Workspace::load(project_dir));
+
+    let (direct_deps, all_direct_deps) = collect_all_direct_deps(&pkg, &workspace, production);
 
     let mut resolved_packages: HashMap<String, resolver::ResolvedPackage>;
 
@@ -146,7 +155,7 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
         }
     } else {
         if frozen_lockfile {
-            return Err("amae-lock.bin not found, but --frozen-lockfile was specified".to_string());
+            return Err("Lockfile amae-lock.bin not found, but --frozen-lockfile was specified".to_string());
         }
         println!("{}", style("Resolving dependencies...").cyan().bold());
         resolved_packages = run_resolver(&all_direct_deps, npmrc.clone(), workspace.clone()).await?;
@@ -169,15 +178,7 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
         Some(dir) => cas::Cas::with_store_dir(std::path::PathBuf::from(dir)),
         None => cas::Cas::new(),
     });
-    let client = Arc::new(
-        reqwest::Client::builder()
-            .pool_max_idle_per_host(64)
-            .pool_idle_timeout(std::time::Duration::from_secs(30))
-            .tcp_keepalive(std::time::Duration::from_secs(30))
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new())
-    );
+    let client = Arc::new(create_http_client());
     let mut download_handles = Vec::new();
 
     for pkg in external_packages {
@@ -258,45 +259,7 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
     let npmrc = Arc::new(npmrc::Npmrc::load());
     let workspace = Arc::new(workspace::Workspace::load(project_dir));
 
-    let is_skipped_specifier = |v: &str| {
-        v.starts_with("file:")
-            || v.starts_with("link:")
-            || v.starts_with("git+")
-            || v.starts_with("git:")
-            || v.starts_with("https:")
-            || v.starts_with("http:")
-            || v.starts_with('/')
-            || v.starts_with('.')
-    };
-
-    let mut direct_deps = BTreeMap::new();
-    for (k, v) in pkg.dependencies.iter() {
-        if !is_skipped_specifier(v) {
-            direct_deps.insert(k.clone(), v.clone());
-        }
-    }
-    for (k, v) in pkg.dev_dependencies.iter() {
-        if !is_skipped_specifier(v) {
-            direct_deps.insert(k.clone(), v.clone());
-        }
-    }
-
-    let mut all_direct_deps = BTreeMap::new();
-    for (k, v) in &direct_deps {
-        all_direct_deps.insert(k.clone(), v.clone());
-    }
-    for (_, ws_pkg) in &workspace.members {
-        for (k, v) in &ws_pkg.dependencies {
-            if !is_skipped_specifier(v) {
-                all_direct_deps.insert(k.clone(), v.clone());
-            }
-        }
-        for (k, v) in &ws_pkg.dev_dependencies {
-            if !is_skipped_specifier(v) {
-                all_direct_deps.insert(k.clone(), v.clone());
-            }
-        }
-    }
+    let (direct_deps, all_direct_deps) = collect_all_direct_deps(&pkg, &workspace, false);
 
     let mut resolved_packages: HashMap<String, resolver::ResolvedPackage>;
 
@@ -397,7 +360,7 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
     );
 
     let cas = Arc::new(cas::Cas::new());
-    let client = Arc::new(reqwest::Client::new());
+    let client = Arc::new(create_http_client());
     let mut download_handles = Vec::new();
 
     for pkg in external_packages {
@@ -412,8 +375,8 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
         let is_optional = pkg.is_optional;
 
         download_handles.push(tokio::spawn(async move {
-            pb_clone.set_message(format!("{}@{}", name, version));
             let res = cas_clone.download_and_extract(&client_clone, &npmrc_clone, &name, &version, &tarball_url, &shasum).await;
+            pb_clone.set_message(format!("{}@{}", name, version));
             pb_clone.inc(1);
             (name, version, res, is_optional)
         }));
@@ -483,20 +446,9 @@ async fn handle_outdated(project_dir: &Path) -> Result<(), String> {
     let npmrc = Arc::new(npmrc::Npmrc::load());
     let workspace = Arc::new(workspace::Workspace::load(project_dir));
 
-    let is_skipped_specifier = |v: &str| {
-        v.starts_with("file:")
-            || v.starts_with("link:")
-            || v.starts_with("git+")
-            || v.starts_with("git:")
-            || v.starts_with("https:")
-            || v.starts_with("http:")
-            || v.starts_with('/')
-            || v.starts_with('.')
-    };
-
     let mut targets = Vec::new();
     for (name, range) in pkg.dependencies.iter().chain(pkg.dev_dependencies.iter()) {
-        if is_skipped_specifier(range) {
+        if package::is_skipped_specifier(range) {
             continue;
         }
         targets.push((name.clone(), range.clone()));
@@ -529,7 +481,7 @@ async fn handle_outdated(project_dir: &Path) -> Result<(), String> {
 
     println!("{}", style("Checking for outdated dependencies...").cyan());
 
-    let client = Arc::new(reqwest::Client::new());
+    let client = Arc::new(create_http_client());
     let mut handles = Vec::new();
 
     for (dep_name, real_name, real_range, current_version) in packages_to_check {
@@ -706,6 +658,35 @@ async fn run_resolver(
     Ok(graph)
 }
 
+async fn fetch_latest_version(package_name: &str) -> Result<String, String> {
+    let url_encoded_name = package_name.replace('/', "%2f");
+    let npmrc = npmrc::Npmrc::load();
+    let registry = &npmrc.registry;
+    let url = format!("{}/{}", registry.trim_end_matches('/'), url_encoded_name);
+    let client = create_http_client();
+    let mut req = client.get(&url)
+        .header("Accept", "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8");
+    if let Some(token) = npmrc.get_token(&url) {
+        req = req.header("Authorization", format!("Bearer {}", token));
+    }
+    let response = req.send()
+        .await
+        .map_err(|e| format!("Failed to connect to registry: {}", e))?;
+
+    if response.status() == 404 {
+        return Err(format!("Package not found: {}", package_name));
+    }
+
+    let pkg_meta: resolver::RegistryPackage = response.json()
+        .await
+        .map_err(|e| format!("Failed to parse metadata for {}: {}", package_name, e))?;
+
+    let latest_version = pkg_meta.dist_tags.get("latest")
+        .ok_or_else(|| format!("Could not determine latest version for {}", package_name))?;
+
+    Ok(latest_version.clone())
+}
+
 async fn handle_add(project_dir: &Path, package_name: &str, dev: bool) -> Result<(), String> {
     let mut pkg = if PackageJson::read_from_dir(project_dir).is_err() {
         let default_pkg = PackageJson {
@@ -725,37 +706,27 @@ async fn handle_add(project_dir: &Path, package_name: &str, dev: bool) -> Result
     println!("{}", style(format!("Fetching package metadata for {}...", package_name)).cyan());
     let (name, range) = if package_name.contains('@') && !package_name.starts_with('@') {
         let parts: Vec<&str> = package_name.split('@').collect();
-        (parts[0].to_string(), parts[1].to_string())
+        let name = parts[0].to_string();
+        let range = parts.get(1).filter(|&&s| !s.is_empty()).map(|s| s.to_string());
+        if let Some(r) = range {
+            (name, r)
+        } else {
+            let latest = fetch_latest_version(&name).await?;
+            (name, format!("^{}", latest))
+        }
     } else if package_name.starts_with('@') && package_name.matches('@').count() > 1 {
         let parts: Vec<&str> = package_name.split('@').collect();
-        (format!("@{}", parts[1]), parts[2].to_string())
+        let name = format!("@{}", parts[1]);
+        let range = parts.get(2).filter(|&&s| !s.is_empty()).map(|s| s.to_string());
+        if let Some(r) = range {
+            (name, r)
+        } else {
+            let latest = fetch_latest_version(&name).await?;
+            (name, format!("^{}", latest))
+        }
     } else {
-        let url_encoded_name = package_name.replace('/', "%2f");
-        let npmrc = npmrc::Npmrc::load();
-        let registry = &npmrc.registry;
-        let url = format!("{}/{}", registry.trim_end_matches('/'), url_encoded_name);
-        let client = reqwest::Client::new();
-        let mut req = client.get(&url)
-            .header("Accept", "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8");
-        if let Some(token) = npmrc.get_token(&url) {
-            req = req.header("Authorization", format!("Bearer {}", token));
-        }
-        let response = req.send()
-            .await
-            .map_err(|e| format!("Failed to connect to registry: {}", e))?;
-
-        if response.status() == 404 {
-            return Err(format!("Package not found: {}", package_name));
-        }
-
-        let pkg_meta: resolver::RegistryPackage = response.json()
-            .await
-            .map_err(|e| format!("Failed to parse metadata for {}: {}", package_name, e))?;
-
-        let latest_version = pkg_meta.dist_tags.get("latest")
-            .ok_or_else(|| format!("Could not determine latest version for {}", package_name))?;
-
-        (package_name.to_string(), format!("^{}", latest_version))
+        let latest = fetch_latest_version(package_name).await?;
+        (package_name.to_string(), format!("^{}", latest))
     };
 
     println!("{}", style(format!("Adding {}@{} to package.json", name, range)).cyan());
@@ -792,9 +763,10 @@ async fn handle_remove(project_dir: &Path, package_name: &str) -> Result<(), Str
         let _ = std::fs::remove_file(lock_path);
     }
 
-    let node_modules_dir = project_dir.join("node_modules");
-    if node_modules_dir.exists() {
-        let _ = std::fs::remove_dir_all(node_modules_dir);
+    let symlink_path = project_dir.join("node_modules").join(package_name);
+    if symlink_path.exists() || symlink_path.is_symlink() {
+        let _ = std::fs::remove_file(&symlink_path);
+        let _ = std::fs::remove_dir_all(&symlink_path);
     }
 
     handle_install(project_dir, false, false, false, None).await
@@ -1050,7 +1022,7 @@ fn handle_why(project_dir: &Path, target_name: &str) -> Result<(), String> {
         visited.insert(target_key.clone());
         
         let mut paths = Vec::new();
-        find_paths_backwards(target_key, &parent_map, &mut visited, &mut current_path, &mut paths);
+        find_paths_backwards(target_key, &parent_map, &mut visited, &mut current_path, &mut paths, 0);
 
         if !paths.is_empty() {
             println!("Paths to {}:", style(target_key).green().bold());
@@ -1089,7 +1061,12 @@ fn find_paths_backwards(
     visited: &mut std::collections::HashSet<String>,
     current_path: &mut Vec<String>,
     all_paths: &mut Vec<Vec<String>>,
+    depth: usize,
 ) {
+    if depth > 100 {
+        return;
+    }
+
     if current == "root" {
         all_paths.push(current_path.clone());
         return;
@@ -1105,7 +1082,7 @@ fn find_paths_backwards(
                 visited.insert(parent.clone());
                 current_path.push(parent.clone());
                 
-                find_paths_backwards(parent, parent_map, visited, current_path, all_paths);
+                find_paths_backwards(parent, parent_map, visited, current_path, all_paths, depth + 1);
                 
                 current_path.pop();
                 visited.remove(parent);

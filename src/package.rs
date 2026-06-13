@@ -49,3 +49,14 @@ impl PackageJson {
         Ok(())
     }
 }
+
+pub fn is_skipped_specifier(v: &str) -> bool {
+    v.starts_with("file:")
+        || v.starts_with("link:")
+        || v.starts_with("git+")
+        || v.starts_with("git:")
+        || v.starts_with("https:")
+        || v.starts_with("http:")
+        || v.starts_with('/')
+        || v.starts_with('.')
+}
