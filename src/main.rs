@@ -16,6 +16,7 @@ use lock::Lockfile;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
+use indicatif::{ProgressBar, ProgressStyle};
 
 #[tokio::main]
 async fn main() {
@@ -203,15 +204,22 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
         lockfile.write_to_file(&lock_path)?;
     }
 
-    println!("Downloading {} packages...", resolved_packages.len());
+    let external_packages: Vec<&resolver::ResolvedPackage> = resolved_packages.values()
+        .filter(|pkg| !pkg.tarball_url.starts_with("workspace:"))
+        .collect();
+
+    let pb = ProgressBar::new(external_packages.len() as u64);
+    pb.set_style(
+        ProgressStyle::with_template("{spinner:.green} Downloading [{bar:30.cyan/blue}] {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("██░")
+    );
+
     let cas = Arc::new(cas::Cas::new());
     let client = Arc::new(reqwest::Client::new());
     let mut download_handles = Vec::new();
 
-    for pkg in resolved_packages.values() {
-        if pkg.tarball_url.starts_with("workspace:") {
-            continue;
-        }
+    for pkg in external_packages {
         let cas_clone = cas.clone();
         let client_clone = client.clone();
         let npmrc_clone = npmrc.clone();
@@ -219,15 +227,20 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
         let version = pkg.version.clone();
         let tarball_url = pkg.tarball_url.clone();
         let shasum = pkg.shasum.clone();
+        let pb_clone = pb.clone();
 
         download_handles.push(tokio::spawn(async move {
-            cas_clone.download_and_extract(&client_clone, &npmrc_clone, &name, &version, &tarball_url, &shasum).await
+            pb_clone.set_message(format!("{}@{}", name, version));
+            let res = cas_clone.download_and_extract(&client_clone, &npmrc_clone, &name, &version, &tarball_url, &shasum).await;
+            pb_clone.inc(1);
+            res
         }));
     }
 
     for handle in download_handles {
         handle.await.map_err(|e| format!("Download thread crashed: {}", e))??;
     }
+    pb.finish_and_clear();
 
     println!("Linking dependencies...");
     let linker = Linker::new(project_dir, workspace.clone());
@@ -388,15 +401,22 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
         }
     }
 
-    println!("Downloading {} packages...", resolved_packages.len());
+    let external_packages: Vec<&resolver::ResolvedPackage> = resolved_packages.values()
+        .filter(|pkg| !pkg.tarball_url.starts_with("workspace:"))
+        .collect();
+
+    let pb = ProgressBar::new(external_packages.len() as u64);
+    pb.set_style(
+        ProgressStyle::with_template("{spinner:.green} Downloading [{bar:30.cyan/blue}] {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("██░")
+    );
+
     let cas = Arc::new(cas::Cas::new());
     let client = Arc::new(reqwest::Client::new());
     let mut download_handles = Vec::new();
 
-    for pkg in resolved_packages.values() {
-        if pkg.tarball_url.starts_with("workspace:") {
-            continue;
-        }
+    for pkg in external_packages {
         let cas_clone = cas.clone();
         let client_clone = client.clone();
         let npmrc_clone = npmrc.clone();
@@ -404,15 +424,20 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
         let version = pkg.version.clone();
         let tarball_url = pkg.tarball_url.clone();
         let shasum = pkg.shasum.clone();
+        let pb_clone = pb.clone();
 
         download_handles.push(tokio::spawn(async move {
-            cas_clone.download_and_extract(&client_clone, &npmrc_clone, &name, &version, &tarball_url, &shasum).await
+            pb_clone.set_message(format!("{}@{}", name, version));
+            let res = cas_clone.download_and_extract(&client_clone, &npmrc_clone, &name, &version, &tarball_url, &shasum).await;
+            pb_clone.inc(1);
+            res
         }));
     }
 
     for handle in download_handles {
         handle.await.map_err(|e| format!("Download thread crashed: {}", e))??;
     }
+    pb.finish_and_clear();
 
     println!("Linking dependencies...");
     let linker = Linker::new(project_dir, workspace.clone());

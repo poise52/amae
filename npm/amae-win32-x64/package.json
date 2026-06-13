@@ -1,6 +1,6 @@
 {
   "name": "amae-win32-x64",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Platform-specific binary for amae-win32-x64",
   "os": [
     "win32"
