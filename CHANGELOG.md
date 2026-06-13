@@ -4,6 +4,14 @@ All notable changes to the `amae` package manager will be documented in this fil
 
 ---
 
+## [0.9.1] - 2026-06-13
+### Added
+- **Scoped registry support**: Resolves package names starting with specific scopes (e.g. `@mycompany`) using custom registry URLs defined in `.npmrc` via `@scope:registry=...`.
+- **Peer dependency auto-installation**: Automatically resolves and installs peer dependencies when not satisfied by sibling/parent packages.
+- **Graceful optional dependency failure handling**: Handles network, resolution, and compilation failures for optional dependencies gracefully without breaking the entire installation.
+
+---
+
 ## [0.8.3] - 2026-06-13
 ### Added
 - **`amae install --store-dir <path>` flag**: Allows specifying a custom local store directory instead of the default global `~/.amae/store`. Useful for isolated environments, benchmarks, and CI pipelines where the cache directory must be controlled per-run.

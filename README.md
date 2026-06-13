@@ -112,11 +112,14 @@ The lockfile (`amae-lock.bin`) captures the full resolved graph. On subsequent i
 
 ## .npmrc
 
-amae reads both local `.npmrc` and `~/.npmrc`. Private registries and auth tokens work out of the box:
+amae reads both local `.npmrc` and `~/.npmrc`. Private registries, scoped registries, and auth tokens work out of the box:
 
 ```ini
 registry=https://registry.npmjs.org/
 //registry.npmjs.org/:_authToken=your_token_here
+
+# Scoped registry for @mycompany packages
+@mycompany:registry=https://npm.mycompany.com/
 ```
 
 ---
