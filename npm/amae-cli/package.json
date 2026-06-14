@@ -1,10 +1,18 @@
 {
   "name": "amae-cli",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "Ultra-fast package manager for JS/TS written in Rust",
   "bin": {
     "amae": "bin/amae"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/poise52/amae.git"
+  },
+  "bugs": {
+    "url": "https://github.com/poise52/amae/issues"
+  },
+  "homepage": "https://github.com/poise52/amae#readme",
   "keywords": [
     "package-manager",
     "npm",
@@ -13,9 +21,9 @@
   ],
   "license": "MIT",
   "optionalDependencies": {
-    "amae-darwin-arm64": "0.10.1",
-    "amae-darwin-x64": "0.10.1",
-    "amae-linux-x64": "0.10.1",
-    "amae-win32-x64": "0.10.1"
+    "amae-darwin-arm64": "0.10.2",
+    "amae-darwin-x64": "0.10.2",
+    "amae-linux-x64": "0.10.2",
+    "amae-win32-x64": "0.10.2"
   }
 }

@@ -128,3 +128,15 @@ Requires Rust 1.75+.
 ## License
 
 MIT
+
+## Поддержать разработчика
+
+USDT BEP `0x46922F2abf0eA51E255C6a62bC8Fb71e604Bad76` 
+
+USDT ERC `0x46922F2abf0eA51E255C6a62bC8Fb71e604Bad76` 
+
+USDT TRC `TG7rYQM4nsC293Eg7cJ1ph1kguLh1A8xCV`
+
+BTC  `bc1q5zmn5f3egeja9v9fwdjn2ld773k4sq0wv8csh3`
+
+ETH  `0x46922F2abf0eA51E255C6a62bC8Fb71e604Bad76`
