@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const execSync = require('child_process').execSync;
 
-const version = '0.10.2';
+const version = '0.10.3';
 const localMode = process.argv.includes('--local');
 const skipBuild = process.argv.includes('--skip-build');
 
@@ -10,6 +10,7 @@ const platformPackages = [
   { name: 'amae-darwin-arm64', os: 'darwin', cpu: 'arm64', binary: 'amae' },
   { name: 'amae-darwin-x64', os: 'darwin', cpu: 'x64', binary: 'amae' },
   { name: 'amae-linux-x64', os: 'linux', cpu: 'x64', binary: 'amae' },
+  { name: 'amae-linux-arm64', os: 'linux', cpu: 'arm64', binary: 'amae' },
   { name: 'amae-win32-x64', os: 'win32', cpu: 'x64', binary: 'amae.exe' }
 ];
 
@@ -110,6 +111,7 @@ const packageMap = {
   'darwin-arm64': 'amae-darwin-arm64',
   'darwin-x64': 'amae-darwin-x64',
   'linux-x64': 'amae-linux-x64',
+  'linux-arm64': 'amae-linux-arm64',
   'win32-x64': 'amae-win32-x64'
 };
 

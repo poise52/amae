@@ -1,0 +1,14 @@
+{
+  "name": "amae-linux-arm64",
+  "version": "0.10.3",
+  "description": "Platform-specific binary for amae-linux-arm64",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "bin": {
+    "amae-linux-arm64": "bin/amae"
+  }
+}

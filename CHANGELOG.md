@@ -4,6 +4,12 @@ All notable changes to the `amae` package manager will be documented in this fil
 
 ---
 
+## [0.10.3] - 2026-06-16
+### Added
+- **Linux ARM64 Support**: Added support and binary packaging for `linux-arm64` (`aarch64-unknown-linux-gnu`). This allows running `amae` on Linux ARM64 servers, AWS Graviton instances, Raspberry Pi, and Docker containers running on Apple Silicon (M1/M2/M3).
+
+---
+
 ## [0.10.1] - 2026-06-14
 ### Performance
 - **Inline CAS Unpacking**: Removed the slow recursive `make_dir_writable` step. We now set permissions directly on the extracted files and directories during the extraction loop.
