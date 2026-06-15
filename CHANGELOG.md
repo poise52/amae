@@ -4,9 +4,10 @@ All notable changes to the `amae` package manager will be documented in this fil
 
 ---
 
-## [0.10.3] - 2026-06-16
+## [0.10.4] - 2026-06-16
 ### Added
-- **Linux ARM64 Support**: Added support and binary packaging for `linux-arm64` (`aarch64-unknown-linux-gnu`). This allows running `amae` on Linux ARM64 servers, AWS Graviton instances, Raspberry Pi, and Docker containers running on Apple Silicon (M1/M2/M3).
+- **Linux ARM64 Support**: Added support and binary packaging for `linux-arm64` (`aarch64-unknown-linux-gnu`).
+- **Alpine Linux Support**: Added dedicated static `musl` builds (`amae-linux-x64-musl` and `amae-linux-arm64-musl`) to support Alpine Linux out-of-the-box on both x64 and arm64 architectures without needing glibc compatibility layers.
 
 ---
 
