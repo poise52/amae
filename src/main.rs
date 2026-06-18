@@ -134,7 +134,6 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
     let _lock_guard = lock.write().map_err(|e| format!("Failed to acquire install lock: {}", e))?;
 
     let pkg = PackageJson::read_from_dir(project_dir)?;
-    let lock_path = project_dir.join("amae-lock.bin");
     let npmrc = Arc::new(npmrc::Npmrc::load());
     let workspace = Arc::new(workspace::Workspace::load(project_dir));
 
@@ -142,10 +141,12 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
 
     let mut resolved_packages: HashMap<String, resolver::ResolvedPackage>;
 
+    let lock_bin = project_dir.join("amae-lock.bin");
+    let lock_json = project_dir.join("amae-lock.json");
     let mut lockfile_read_res = None;
-    if lock_path.exists() {
+    if lock_bin.exists() || lock_json.exists() {
         println!("{}", style("Found lockfile. Reading dependencies...").cyan());
-        match Lockfile::read_from_file(&lock_path) {
+        match load_lockfile(project_dir) {
             Ok(lf) => { lockfile_read_res = Some(lf); }
             Err(e) => {
                 println!("{}", style(format!("Warning: Failed to read lockfile: {}. Re-resolving all dependencies...", e)).yellow());
@@ -166,21 +167,21 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
             resolved_packages = lockfile.packages.into_iter().collect();
         } else {
             if frozen_lockfile {
-                return Err("amae-lock.bin is out of sync with package.json, but --frozen-lockfile was specified".to_string());
+                return Err("Lockfile is out of sync with package.json, but --frozen-lockfile was specified".to_string());
             }
             println!("{}", style("Lockfile out of date. Resolving dependencies...").yellow());
             resolved_packages = run_resolver(&all_direct_deps, npmrc.clone(), workspace.clone()).await?;
             let lockfile = Lockfile::new(all_direct_deps.clone(), resolved_packages.clone());
-            lockfile.write_to_file(&lock_path)?;
+            save_lockfile(project_dir, &lockfile)?;
         }
     } else {
         if frozen_lockfile {
-            return Err("Lockfile amae-lock.bin not found or invalid, but --frozen-lockfile was specified".to_string());
+            return Err("Lockfile not found, but --frozen-lockfile was specified".to_string());
         }
         println!("{}", style("Resolving dependencies...").cyan().bold());
         resolved_packages = run_resolver(&all_direct_deps, npmrc.clone(), workspace.clone()).await?;
         let lockfile = Lockfile::new(all_direct_deps.clone(), resolved_packages.clone());
-        lockfile.write_to_file(&lock_path)?;
+        save_lockfile(project_dir, &lockfile)?;
     }
 
     let external_packages: Vec<&resolver::ResolvedPackage> = resolved_packages.values()
@@ -288,7 +289,6 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
     let _lock_guard = lock.write().map_err(|e| format!("Failed to acquire install lock: {}", e))?;
 
     let pkg = PackageJson::read_from_dir(project_dir)?;
-    let lock_path = project_dir.join("amae-lock.bin");
     let npmrc = Arc::new(npmrc::Npmrc::load());
     let workspace = Arc::new(workspace::Workspace::load(project_dir));
 
@@ -301,14 +301,16 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
             println!("{}", style("Updating all dependencies...").cyan().bold());
             resolved_packages = run_resolver(&all_direct_deps, npmrc.clone(), workspace.clone()).await?;
             let lockfile = Lockfile::new(all_direct_deps.clone(), resolved_packages.clone());
-            lockfile.write_to_file(&lock_path)?;
+            save_lockfile(project_dir, &lockfile)?;
         }
         Some(pkg_name) => {
             let mut prepopulated = HashMap::new();
             let mut read_ok = false;
-            if lock_path.exists() {
+            let lock_bin = project_dir.join("amae-lock.bin");
+            let lock_json = project_dir.join("amae-lock.json");
+            if lock_bin.exists() || lock_json.exists() {
                 println!("{}", style(format!("Updating package {} and its transitive dependencies...", pkg_name)).cyan().bold());
-                match Lockfile::read_from_file(&lock_path) {
+                match load_lockfile(project_dir) {
                     Ok(lockfile) => {
                         prepopulated = lockfile.packages.into_iter().collect();
                         read_ok = true;
@@ -382,12 +384,12 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
 
                 resolved_packages = resolver.resolved_graph.read().map_err(|e| format!("Lock poisoned: {}", e))?.clone();
                 let lockfile = Lockfile::new(all_direct_deps.clone(), resolved_packages.clone());
-                lockfile.write_to_file(&lock_path)?;
+                save_lockfile(project_dir, &lockfile)?;
             } else {
                 println!("{}", style("No lockfile found. Resolving all dependencies...").yellow());
                 resolved_packages = run_resolver(&all_direct_deps, npmrc.clone(), workspace.clone()).await?;
                 let lockfile = Lockfile::new(all_direct_deps.clone(), resolved_packages.clone());
-                lockfile.write_to_file(&lock_path)?;
+                save_lockfile(project_dir, &lockfile)?;
             }
         }
     }
@@ -480,13 +482,9 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
 
 async fn handle_outdated(project_dir: &Path) -> Result<(), String> {
     let pkg = PackageJson::read_from_dir(project_dir)?;
-    let lock_path = project_dir.join("amae-lock.bin");
-    if !lock_path.exists() {
-        return Err("No lockfile found. Please run 'amae install' first.".to_string());
-    }
 
-    let lockfile = Lockfile::read_from_file(&lock_path)
-        .map_err(|e| format!("Failed to read lockfile: {}. Please run 'amae install' first.", e))?;
+    let lockfile = load_lockfile(project_dir)
+        .map_err(|e| format!("Failed to read lockfile: {}. Run 'amae install' first.", e))?;
     let resolved_packages: HashMap<String, resolver::ResolvedPackage> = lockfile.packages.into_iter().collect();
 
     let npmrc = Arc::new(npmrc::Npmrc::load());
@@ -804,10 +802,10 @@ async fn handle_remove(project_dir: &Path, package_name: &str) -> Result<(), Str
     pkg.write_to_dir(project_dir)?;
     println!("{}", style(format!("Removed {} from package.json", package_name)).green().bold());
 
-    let lock_path = project_dir.join("amae-lock.bin");
-    if lock_path.exists() {
-        let _ = std::fs::remove_file(lock_path);
-    }
+    let lock_path_bin = project_dir.join("amae-lock.bin");
+    let lock_path_json = project_dir.join("amae-lock.json");
+    let _ = std::fs::remove_file(lock_path_bin);
+    let _ = std::fs::remove_file(lock_path_json);
 
     let symlink_path = project_dir.join("node_modules").join(package_name);
     if symlink_path.exists() || symlink_path.is_symlink() {
@@ -878,10 +876,12 @@ fn handle_clean(project_dir: &Path) -> Result<(), String> {
         println!("{}", style("Cleaning node_modules...").cyan());
         std::fs::remove_dir_all(&node_modules).map_err(|e| format!("Failed to remove node_modules: {}", e))?;
     }
-    let lock_path = project_dir.join("amae-lock.bin");
-    if lock_path.exists() {
-        println!("{}", style("Cleaning amae-lock.bin...").cyan());
-        std::fs::remove_file(&lock_path).map_err(|e| format!("Failed to remove lockfile: {}", e))?;
+    let lock_path_bin = project_dir.join("amae-lock.bin");
+    let lock_path_json = project_dir.join("amae-lock.json");
+    if lock_path_bin.exists() || lock_path_json.exists() {
+        println!("{}", style("Cleaning lockfiles...").cyan());
+        let _ = std::fs::remove_file(&lock_path_bin);
+        let _ = std::fs::remove_file(&lock_path_json);
     }
     println!("{}", style("Cleaned project directories successfully.").green().bold());
     Ok(())
@@ -893,14 +893,9 @@ fn handle_list(project_dir: &Path) -> Result<(), String> {
     let version = pkg.version.unwrap_or_else(|| "0.0.0".to_string());
     println!("{}@{} {}", style(name).bold(), style(version).bold(), style(project_dir.display()).dim());
 
-    let lock_path = project_dir.join("amae-lock.bin");
-    let resolved_map = if lock_path.exists() {
-        match Lockfile::read_from_file(&lock_path) {
-            Ok(lock) => Some(lock.packages),
-            Err(_) => None,
-        }
-    } else {
-        None
+    let resolved_map = match load_lockfile(project_dir) {
+        Ok(lock) => Some(lock.packages),
+        Err(_) => None,
     };
 
     let list_deps = |deps: &BTreeMap<String, String>, is_dev: bool| {
@@ -983,11 +978,7 @@ fn handle_completions(shell: clap_complete::Shell) -> Result<(), String> {
 fn handle_why(project_dir: &Path, target_name: &str) -> Result<(), String> {
     let pkg = PackageJson::read_from_dir(project_dir)?;
     let workspace = workspace::Workspace::load(project_dir);
-    let lock_path = project_dir.join("amae-lock.bin");
-    if !lock_path.exists() {
-        return Err("No lockfile found. Run 'amae install' first.".to_string());
-    }
-    let lockfile = Lockfile::read_from_file(&lock_path)
+    let lockfile = load_lockfile(project_dir)
         .map_err(|e| format!("Failed to read lockfile: {}. Run 'amae install' first.", e))?;
 
     let mut target_keys = Vec::new();
@@ -1155,5 +1146,49 @@ fn sanitize_command(cmd: &mut std::process::Command, new_path: &std::ffi::OsStr)
         }
     }
     cmd.env("PATH", new_path);
+}
+
+fn load_lockfile(project_dir: &Path) -> Result<Lockfile, String> {
+    let lock_bin = project_dir.join("amae-lock.bin");
+    let lock_json = project_dir.join("amae-lock.json");
+
+    if !lock_bin.exists() && !lock_json.exists() {
+        return Err("No lockfile found".to_string());
+    }
+
+    if lock_bin.exists() && lock_json.exists() {
+        let meta_bin = std::fs::metadata(&lock_bin).map_err(|e| e.to_string())?;
+        let meta_json = std::fs::metadata(&lock_json).map_err(|e| e.to_string())?;
+
+        let time_bin = meta_bin.modified().map_err(|e| e.to_string())?;
+        let time_json = meta_json.modified().map_err(|e| e.to_string())?;
+
+        if time_json > time_bin {
+            let lockfile = Lockfile::read_from_json(&lock_json)?;
+            let _ = lockfile.write_to_file(&lock_bin);
+            return Ok(lockfile);
+        } else {
+            return Lockfile::read_from_file(&lock_bin);
+        }
+    }
+
+    if lock_json.exists() {
+        let lockfile = Lockfile::read_from_json(&lock_json)?;
+        let _ = lockfile.write_to_file(&lock_bin);
+        return Ok(lockfile);
+    }
+
+    let lockfile = Lockfile::read_from_file(&lock_bin)?;
+    let _ = lockfile.write_to_json(&lock_json);
+    Ok(lockfile)
+}
+
+fn save_lockfile(project_dir: &Path, lockfile: &Lockfile) -> Result<(), String> {
+    let lock_bin = project_dir.join("amae-lock.bin");
+    let lock_json = project_dir.join("amae-lock.json");
+
+    lockfile.write_to_file(&lock_bin)?;
+    lockfile.write_to_json(&lock_json)?;
+    Ok(())
 }
 

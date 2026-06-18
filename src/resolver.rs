@@ -43,7 +43,7 @@ pub struct ResolvedPackage {
     pub version: String,
     pub tarball_url: String,
     pub shasum: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub integrity: Option<String>,
     pub dependencies: BTreeMap<String, String>,
     #[serde(default)]
