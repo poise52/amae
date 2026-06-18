@@ -121,6 +121,18 @@ fn collect_all_direct_deps(
 }
 
 async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: bool, ignore_scripts: bool, store_dir: Option<&str>) -> Result<(), String> {
+    let lock_dir = project_dir.join("node_modules");
+    std::fs::create_dir_all(&lock_dir).map_err(|e| format!("Failed to create node_modules directory: {}", e))?;
+    let lock_file_path = lock_dir.join(".amae-install.lock");
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&lock_file_path)
+        .map_err(|e| format!("Failed to open install lock: {}", e))?;
+    let mut lock = fd_lock::RwLock::new(file);
+    let _lock_guard = lock.write().map_err(|e| format!("Failed to acquire install lock: {}", e))?;
+
     let pkg = PackageJson::read_from_dir(project_dir)?;
     let lock_path = project_dir.join("amae-lock.bin");
     let npmrc = Arc::new(npmrc::Npmrc::load());
@@ -130,10 +142,18 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
 
     let mut resolved_packages: HashMap<String, resolver::ResolvedPackage>;
 
+    let mut lockfile_read_res = None;
     if lock_path.exists() {
         println!("{}", style("Found lockfile. Reading dependencies...").cyan());
-        let lockfile = Lockfile::read_from_file(&lock_path)?;
-        
+        match Lockfile::read_from_file(&lock_path) {
+            Ok(lf) => { lockfile_read_res = Some(lf); }
+            Err(e) => {
+                println!("{}", style(format!("Warning: Failed to read lockfile: {}. Re-resolving all dependencies...", e)).yellow());
+            }
+        }
+    }
+
+    if let Some(lockfile) = lockfile_read_res {
         let mut match_ok = true;
         for (k, v) in &all_direct_deps {
             if lockfile.direct_dependencies.get(k) != Some(v) {
@@ -155,7 +175,7 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
         }
     } else {
         if frozen_lockfile {
-            return Err("Lockfile amae-lock.bin not found, but --frozen-lockfile was specified".to_string());
+            return Err("Lockfile amae-lock.bin not found or invalid, but --frozen-lockfile was specified".to_string());
         }
         println!("{}", style("Resolving dependencies...").cyan().bold());
         resolved_packages = run_resolver(&all_direct_deps, npmrc.clone(), workspace.clone()).await?;
@@ -189,11 +209,12 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
         let version = pkg.version.clone();
         let tarball_url = pkg.tarball_url.clone();
         let shasum = pkg.shasum.clone();
+        let integrity = pkg.integrity.clone();
         let pb_clone = pb.clone();
         let is_optional = pkg.is_optional;
 
         download_handles.push(tokio::spawn(async move {
-            let res = cas_clone.download_and_extract(&client_clone, &npmrc_clone, &name, &version, &tarball_url, &shasum).await;
+            let res = cas_clone.download_and_extract(&client_clone, &npmrc_clone, &name, &version, &tarball_url, &shasum, integrity.as_deref()).await;
             pb_clone.set_message(format!("{}@{}", name, version));
             pb_clone.inc(1);
             (name, version, res, is_optional)
@@ -254,6 +275,18 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
 }
 
 async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -> Result<(), String> {
+    let lock_dir = project_dir.join("node_modules");
+    std::fs::create_dir_all(&lock_dir).map_err(|e| format!("Failed to create node_modules directory: {}", e))?;
+    let lock_file_path = lock_dir.join(".amae-install.lock");
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&lock_file_path)
+        .map_err(|e| format!("Failed to open install lock: {}", e))?;
+    let mut lock = fd_lock::RwLock::new(file);
+    let _lock_guard = lock.write().map_err(|e| format!("Failed to acquire install lock: {}", e))?;
+
     let pkg = PackageJson::read_from_dir(project_dir)?;
     let lock_path = project_dir.join("amae-lock.bin");
     let npmrc = Arc::new(npmrc::Npmrc::load());
@@ -271,10 +304,21 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
             lockfile.write_to_file(&lock_path)?;
         }
         Some(pkg_name) => {
+            let mut prepopulated = HashMap::new();
+            let mut read_ok = false;
             if lock_path.exists() {
                 println!("{}", style(format!("Updating package {} and its transitive dependencies...", pkg_name)).cyan().bold());
-                let lockfile = Lockfile::read_from_file(&lock_path)?;
-                let mut prepopulated: HashMap<String, resolver::ResolvedPackage> = lockfile.packages.into_iter().collect();
+                match Lockfile::read_from_file(&lock_path) {
+                    Ok(lockfile) => {
+                        prepopulated = lockfile.packages.into_iter().collect();
+                        read_ok = true;
+                    }
+                    Err(e) => {
+                        println!("{}", style(format!("Warning: Failed to read lockfile: {}. Re-resolving all dependencies...", e)).yellow());
+                    }
+                }
+            }
+            if read_ok {
 
                 let mut pkg_version = None;
                 for key in prepopulated.keys() {
@@ -371,11 +415,12 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
         let version = pkg.version.clone();
         let tarball_url = pkg.tarball_url.clone();
         let shasum = pkg.shasum.clone();
+        let integrity = pkg.integrity.clone();
         let pb_clone = pb.clone();
         let is_optional = pkg.is_optional;
 
         download_handles.push(tokio::spawn(async move {
-            let res = cas_clone.download_and_extract(&client_clone, &npmrc_clone, &name, &version, &tarball_url, &shasum).await;
+            let res = cas_clone.download_and_extract(&client_clone, &npmrc_clone, &name, &version, &tarball_url, &shasum, integrity.as_deref()).await;
             pb_clone.set_message(format!("{}@{}", name, version));
             pb_clone.inc(1);
             (name, version, res, is_optional)
@@ -440,7 +485,8 @@ async fn handle_outdated(project_dir: &Path) -> Result<(), String> {
         return Err("No lockfile found. Please run 'amae install' first.".to_string());
     }
 
-    let lockfile = Lockfile::read_from_file(&lock_path)?;
+    let lockfile = Lockfile::read_from_file(&lock_path)
+        .map_err(|e| format!("Failed to read lockfile: {}. Please run 'amae install' first.", e))?;
     let resolved_packages: HashMap<String, resolver::ResolvedPackage> = lockfile.packages.into_iter().collect();
 
     let npmrc = Arc::new(npmrc::Npmrc::load());
@@ -802,21 +848,19 @@ async fn handle_run(project_dir: &Path, script_name: &str) -> Result<(), String>
     }
 
     #[cfg(unix)]
-    let mut child = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(cmd_str)
-        .env("PATH", path_val)
-        .current_dir(project_dir)
-        .spawn()
-        .map_err(|e| format!("Failed to start shell process: {}", e))?;
+    let mut cmd = std::process::Command::new("sh");
+    #[cfg(unix)]
+    cmd.arg("-c").arg(cmd_str);
 
     #[cfg(windows)]
-    let mut child = std::process::Command::new("cmd")
-        .arg("/C")
-        .arg(cmd_str)
-        .env("PATH", path_val)
-        .current_dir(project_dir)
-        .spawn()
+    let mut cmd = std::process::Command::new("cmd");
+    #[cfg(windows)]
+    cmd.arg("/C").arg(cmd_str);
+
+    sanitize_command(&mut cmd, &path_val);
+    cmd.current_dir(project_dir);
+
+    let mut child = cmd.spawn()
         .map_err(|e| format!("Failed to start shell process: {}", e))?;
 
     let status = child.wait().map_err(|e| format!("Failed to wait for process: {}", e))?;
@@ -943,7 +987,8 @@ fn handle_why(project_dir: &Path, target_name: &str) -> Result<(), String> {
     if !lock_path.exists() {
         return Err("No lockfile found. Run 'amae install' first.".to_string());
     }
-    let lockfile = Lockfile::read_from_file(&lock_path)?;
+    let lockfile = Lockfile::read_from_file(&lock_path)
+        .map_err(|e| format!("Failed to read lockfile: {}. Run 'amae install' first.", e))?;
 
     let mut target_keys = Vec::new();
     for key in lockfile.packages.keys() {
@@ -1089,5 +1134,26 @@ fn find_paths_backwards(
             }
         }
     }
+}
+
+fn sanitize_command(cmd: &mut std::process::Command, new_path: &std::ffi::OsStr) {
+    cmd.env_clear();
+    #[cfg(not(windows))]
+    let safe_env_keys = vec![
+        "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TEMP", "TMP"
+    ];
+    #[cfg(windows)]
+    let safe_env_keys = vec![
+        "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TEMP", "TMP",
+        "SystemRoot", "SystemDrive", "COMSPEC", "PATHEXT", "windir", 
+        "APPDATA", "LOCALAPPDATA", "USERPROFILE", "PROGRAMFILES", 
+        "PROGRAMFILES(X86)", "COMMONPROGRAMFILES", "ALLUSERSPROFILE"
+    ];
+    for key in &safe_env_keys {
+        if let Ok(val) = std::env::var(key) {
+            cmd.env(key, val);
+        }
+    }
+    cmd.env("PATH", new_path);
 }
 

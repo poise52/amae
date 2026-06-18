@@ -25,7 +25,11 @@ impl Lockfile {
     pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self, String> {
         let file = File::open(path).map_err(|e| format!("Failed to open lockfile: {}", e))?;
         let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| format!("Failed to mmap lockfile: {}", e))? };
-        bincode::deserialize(&mmap).map_err(|e| format!("Failed to deserialize lockfile: {}", e))
+        use bincode::Options;
+        bincode::options()
+            .with_limit(50 * 1024 * 1024)
+            .deserialize(&mmap)
+            .map_err(|e| format!("Failed to deserialize lockfile: {}", e))
     }
 
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), String> {

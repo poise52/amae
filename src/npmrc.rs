@@ -8,6 +8,7 @@ pub struct Npmrc {
     pub registry: String,
     pub auth_tokens: HashMap<String, String>,
     pub scoped_registries: HashMap<String, String>,
+    pub deny_weak_hashes: bool,
 }
 
 impl Npmrc {
@@ -16,6 +17,7 @@ impl Npmrc {
             registry: "https://registry.npmjs.org/".to_string(),
             auth_tokens: HashMap::new(),
             scoped_registries: HashMap::new(),
+            deny_weak_hashes: false,
         };
 
         if let Some(user_dirs) = UserDirs::new() {
@@ -48,6 +50,8 @@ impl Npmrc {
 
                 if key == "registry" {
                     self.registry = val;
+                } else if key == "deny-weak-hashes" || key == "deny_weak_hashes" {
+                    self.deny_weak_hashes = val == "true";
                 } else if key.starts_with('@') && key.ends_with(":registry") {
                     let scope = key.trim_end_matches(":registry").to_string();
                     self.scoped_registries.insert(scope, val);

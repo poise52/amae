@@ -1,7 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
 use directories::UserDirs;
-use sha1::{Sha1, Digest};
 use tar::Archive;
 use flate2::read::GzDecoder;
 
@@ -56,6 +55,7 @@ impl Cas {
         version: &str,
         tarball_url: &str,
         expected_shasum: &str,
+        expected_integrity: Option<&str>,
     ) -> Result<PathBuf, String> {
         let dest_dir = self.package_dir(name, version);
         if dest_dir.exists() {
@@ -104,26 +104,50 @@ impl Cas {
             };
 
             let b_clone = b.clone();
-            let shasum_res = tokio::task::spawn_blocking(move || {
-                let mut hasher = Sha1::new();
-                hasher.update(&b_clone);
-                format!("{:x}", hasher.finalize())
+            let expected_integrity_owned = expected_integrity.map(|s| s.to_string());
+            let shasum_owned = expected_shasum.to_string();
+            let name_owned = name.to_string();
+            let deny_weak_hashes = npmrc.deny_weak_hashes;
+            let hash_ok_res = tokio::task::spawn_blocking(move || {
+                let mut checked_sha512 = false;
+                if let Some(ref integrity) = expected_integrity_owned {
+                    if let Some(sha512_hash) = integrity.strip_prefix("sha512-") {
+                        use sha2::{Sha512, Digest};
+                        use base64::{Engine as _, engine::general_purpose::STANDARD};
+                        let mut hasher = Sha512::new();
+                        hasher.update(&b_clone);
+                        let base64_digest = STANDARD.encode(&hasher.finalize());
+                        if base64_digest != sha512_hash {
+                            return Err(format!("Integrity check failed for {}. Expected sha512 {}, got {}", name_owned, sha512_hash, base64_digest));
+                        }
+                        checked_sha512 = true;
+                    }
+                }
+                if deny_weak_hashes && !checked_sha512 {
+                    return Err(format!("Security Violation: Package {} does not have a SHA-512 integrity hash, and deny-weak-hashes is enabled.", name_owned));
+                }
+                if !checked_sha512 {
+                    use sha1::{Sha1, Digest};
+                    let mut hasher = Sha1::new();
+                    hasher.update(&b_clone);
+                    let shasum = format!("{:x}", hasher.finalize());
+                    if shasum != shasum_owned {
+                        return Err(format!("Integrity check failed for {}. Expected shasum {}, got {}", name_owned, shasum_owned, shasum));
+                    }
+                }
+                Ok(())
             }).await;
 
-            let shasum = match shasum_res {
-                Ok(s) => s,
-                Err(e) => {
-                    last_err = format!("SHA1 hashing thread panicked: {}", e);
+            match hash_ok_res {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    last_err = e;
                     continue;
                 }
-            };
-
-            if shasum != expected_shasum {
-                last_err = format!(
-                    "Integrity check failed for {}. Expected shasum {}, got {}",
-                    name, expected_shasum, shasum
-                );
-                continue;
+                Err(e) => {
+                    last_err = format!("Hashing thread panicked: {}", e);
+                    continue;
+                }
             }
 
             bytes = Some(b);
@@ -148,6 +172,46 @@ impl Cas {
             let path = entry.path().map_err(|e| format!("Failed to get entry path: {}", e))?;
             let dest = temp_extract_dir.path().join(&path);
             
+            let mut normalized_dest = PathBuf::new();
+            for comp in dest.components() {
+                match comp {
+                    std::path::Component::ParentDir => { normalized_dest.pop(); }
+                    std::path::Component::Normal(c) => normalized_dest.push(c),
+                    std::path::Component::RootDir => normalized_dest.push(std::path::Component::RootDir),
+                    std::path::Component::Prefix(p) => normalized_dest.push(std::path::Component::Prefix(p)),
+                    _ => {}
+                }
+            }
+
+            if !normalized_dest.starts_with(temp_extract_dir.path()) {
+                return Err(format!("Security Violation: Archive entry '{}' attempts path traversal outside extraction directory", path.display()));
+            }
+
+            if entry.header().entry_type().is_symlink() || entry.header().entry_type().is_hard_link() {
+                if let Some(link_target) = entry.link_name().map_err(|e| format!("Failed to get link target: {}", e))? {
+                    let target_path = if link_target.is_absolute() {
+                        link_target.to_path_buf()
+                    } else {
+                        dest.parent().unwrap().join(link_target)
+                    };
+                    
+                    let mut normalized_target = PathBuf::new();
+                    for comp in target_path.components() {
+                        match comp {
+                            std::path::Component::ParentDir => { normalized_target.pop(); }
+                            std::path::Component::Normal(c) => normalized_target.push(c),
+                            std::path::Component::RootDir => normalized_target.push(std::path::Component::RootDir),
+                            std::path::Component::Prefix(p) => normalized_target.push(std::path::Component::Prefix(p)),
+                            _ => {}
+                        }
+                    }
+                    
+                    if !normalized_target.starts_with(temp_extract_dir.path()) {
+                        return Err(format!("Security Violation: Archive link target '{}' points outside extraction directory", normalized_target.display()));
+                    }
+                }
+            }
+
             entry.set_preserve_permissions(false);
             entry.unpack_in(temp_extract_dir.path()).map_err(|e| format!("Failed to unpack entry: {}", e))?;
             

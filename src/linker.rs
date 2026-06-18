@@ -64,6 +64,7 @@ impl Linker {
             Ok(())
         }).collect::<Result<Vec<()>, String>>()?;
 
+        let project_root = self.node_modules_dir.parent().unwrap();
         for (_, pkg) in resolved_graph.iter() {
             let local_pkg_node_modules = if pkg.tarball_url.starts_with("workspace:") {
                 let ws_path = Path::new(&pkg.tarball_url["workspace:".len()..]);
@@ -75,6 +76,8 @@ impl Linker {
             for (dep_name, dep_version) in pkg.dependencies.iter() {
                 let dep_symlink_path = local_pkg_node_modules.join(dep_name);
                 
+                validate_safe_path(project_root, &dep_symlink_path)?;
+
                 if let Some(parent) = dep_symlink_path.parent() {
                     fs::create_dir_all(parent)
                         .map_err(|e| format!("Failed to create parent directory for symlink: {}", e))?;
@@ -95,6 +98,8 @@ impl Linker {
                     self.local_package_store_dir(dep_name, dep_version)
                 };
 
+                validate_safe_path(project_root, &target_path)?;
+
                 let relative_target = get_relative_path(dep_symlink_path.parent().unwrap(), &target_path)
                     .ok_or_else(|| format!("Could not compute relative path from {} to {}", dep_symlink_path.parent().unwrap().display(), target_path.display()))?;
 
@@ -105,6 +110,8 @@ impl Linker {
 
         for (name, version) in direct_deps {
             let symlink_path = self.node_modules_dir.join(name);
+
+            validate_safe_path(&self.node_modules_dir, &symlink_path)?;
 
             if let Some(parent) = symlink_path.parent() {
                 fs::create_dir_all(parent)
@@ -125,6 +132,8 @@ impl Linker {
             } else {
                 self.local_package_store_dir(name, version)
             };
+
+            validate_safe_path(project_root, &target_path)?;
 
             let relative_target = get_relative_path(symlink_path.parent().unwrap(), &target_path)
                 .ok_or_else(|| format!("Could not compute relative path from {} to {}", symlink_path.parent().unwrap().display(), target_path.display()))?;
@@ -197,11 +206,16 @@ impl Linker {
                 for (cmd_name, bin_rel_path) in bins {
                     let symlink_path = bin_dir.join(&cmd_name);
                     
+                    validate_safe_path(&bin_dir, &symlink_path)?;
+
                     if symlink_path.exists() || symlink_path.is_symlink() {
                         let _ = fs::remove_file(&symlink_path);
                     }
 
                     let target_path = dep_store_dir.join(&bin_rel_path);
+
+                    validate_safe_path(&dep_store_dir, &target_path)?;
+
                     let relative_target = get_relative_path(&bin_dir, &target_path)
                         .ok_or_else(|| format!("Could not compute relative path from {} to {}", bin_dir.display(), target_path.display()))?;
 
@@ -309,21 +323,19 @@ impl Linker {
             println!("  > {} ({}): {}", style(&pkg.name).dim(), style(name).dim(), style(&script).dim());
 
             #[cfg(unix)]
-            let mut child = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(&script)
-                .env("PATH", &new_path)
-                .current_dir(&pkg_store_dir)
-                .spawn()
-                .map_err(|e| format!("Failed to run script '{}' for {}: {}", script, pkg.name, e))?;
+            let mut cmd = std::process::Command::new("sh");
+            #[cfg(unix)]
+            cmd.arg("-c").arg(&script);
 
             #[cfg(windows)]
-            let mut child = std::process::Command::new("cmd")
-                .arg("/C")
-                .arg(&script)
-                .env("PATH", &new_path)
-                .current_dir(&pkg_store_dir)
-                .spawn()
+            let mut cmd = std::process::Command::new("cmd");
+            #[cfg(windows)]
+            cmd.arg("/C").arg(&script);
+
+            sanitize_command(&mut cmd, &new_path);
+            cmd.current_dir(&pkg_store_dir);
+
+            let mut child = cmd.spawn()
                 .map_err(|e| format!("Failed to run script '{}' for {}: {}", script, pkg.name, e))?;
 
             let status = child.wait().map_err(|e| format!("Failed to wait for script '{}': {}", script, e))?;
@@ -385,21 +397,19 @@ impl Linker {
                 println!("  > root ({}): {}", style(name).dim(), style(&script).dim());
 
                 #[cfg(unix)]
-                let mut child = std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&script)
-                    .env("PATH", &new_path)
-                    .current_dir(&root_dir)
-                    .spawn()
-                    .map_err(|e| format!("Failed to run root script '{}': {}", script, e))?;
+                let mut cmd = std::process::Command::new("sh");
+                #[cfg(unix)]
+                cmd.arg("-c").arg(&script);
 
                 #[cfg(windows)]
-                let mut child = std::process::Command::new("cmd")
-                    .arg("/C")
-                    .arg(&script)
-                    .env("PATH", &new_path)
-                    .current_dir(&root_dir)
-                    .spawn()
+                let mut cmd = std::process::Command::new("cmd");
+                #[cfg(windows)]
+                cmd.arg("/C").arg(&script);
+
+                sanitize_command(&mut cmd, &new_path);
+                cmd.current_dir(&root_dir);
+
+                let mut child = cmd.spawn()
                     .map_err(|e| format!("Failed to run root script '{}': {}", script, e))?;
 
                 let status = child.wait().map_err(|e| format!("Failed to wait for root script '{}': {}", script, e))?;
@@ -505,4 +515,74 @@ fn make_executable<P: AsRef<Path>>(path: P) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn make_executable<P: AsRef<Path>>(_path: P) -> std::io::Result<()> {
     Ok(())
+}
+
+fn clean_absolute_path(base_dir: &Path, path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base_dir.join(path)
+    };
+    
+    let absolute_str = absolute.to_string_lossy();
+    let stripped = if absolute_str.starts_with(r"\\?\") {
+        PathBuf::from(&absolute_str[4..])
+    } else {
+        absolute
+    };
+
+    let mut clean = PathBuf::new();
+    for component in stripped.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                clean.pop();
+            }
+            std::path::Component::Normal(c) => {
+                clean.push(c);
+            }
+            std::path::Component::RootDir => {
+                clean.push(std::path::Component::RootDir);
+            }
+            std::path::Component::Prefix(p) => {
+                clean.push(std::path::Component::Prefix(p));
+            }
+            _ => {}
+        }
+    }
+    clean
+}
+
+fn validate_safe_path(base_dir: &Path, target_path: &Path) -> Result<(), String> {
+    let clean_base = clean_absolute_path(base_dir, base_dir);
+    let clean_target = clean_absolute_path(base_dir, target_path);
+    
+    if !clean_target.starts_with(&clean_base) {
+        return Err(format!(
+            "Security Violation: Path '{}' escapes safe base directory '{}'",
+            target_path.display(),
+            base_dir.display()
+        ));
+    }
+    Ok(())
+}
+
+fn sanitize_command(cmd: &mut std::process::Command, new_path: &std::ffi::OsStr) {
+    cmd.env_clear();
+    #[cfg(not(windows))]
+    let safe_env_keys = vec![
+        "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TEMP", "TMP"
+    ];
+    #[cfg(windows)]
+    let safe_env_keys = vec![
+        "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TEMP", "TMP",
+        "SystemRoot", "SystemDrive", "COMSPEC", "PATHEXT", "windir", 
+        "APPDATA", "LOCALAPPDATA", "USERPROFILE", "PROGRAMFILES", 
+        "PROGRAMFILES(X86)", "COMMONPROGRAMFILES", "ALLUSERSPROFILE"
+    ];
+    for key in &safe_env_keys {
+        if let Ok(val) = std::env::var(key) {
+            cmd.env(key, val);
+        }
+    }
+    cmd.env("PATH", new_path);
 }

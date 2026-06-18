@@ -43,6 +43,8 @@ pub struct ResolvedPackage {
     pub version: String,
     pub tarball_url: String,
     pub shasum: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integrity: Option<String>,
     pub dependencies: BTreeMap<String, String>,
     #[serde(default)]
     pub is_optional: bool,
@@ -347,6 +349,7 @@ impl Resolver {
                             version: ws_pkg.version.clone(),
                             tarball_url: format!("workspace:{}", ws_pkg.path.display()),
                             shasum: String::new(),
+                            integrity: None,
                             dependencies: BTreeMap::new(),
                             is_optional: false,
                         },
@@ -391,7 +394,7 @@ impl Resolver {
 
             let metadata = self.fetch_metadata(&real_name).await?;
 
-            let (version, deps, tarball_url, shasum, optional_deps_keys) = {
+            let (version, deps, tarball_url, shasum, integrity, optional_deps_keys) = {
                 let mut matched_version: Option<(&String, &RegistryVersion)> = None;
                 for (ver_str, ver_info) in metadata.versions.iter().rev() {
                     if let Ok(ver) = Version::parse(ver_str) {
@@ -420,6 +423,7 @@ impl Resolver {
                     combined_deps,
                     ver_info.dist.tarball.clone(),
                     ver_info.dist.shasum.clone(),
+                    ver_info.dist.integrity.clone(),
                     optional_keys,
                 )
             };
@@ -444,6 +448,7 @@ impl Resolver {
                     version: version.clone(),
                     tarball_url: tarball_url.clone(),
                     shasum: shasum.clone(),
+                    integrity: integrity.clone(),
                     dependencies: BTreeMap::new(),
                     is_optional,
                 },
