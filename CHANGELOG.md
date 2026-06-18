@@ -2,6 +2,21 @@
 
 All notable changes to the `amae` package manager will be documented in this file.
 
+## [0.10.5] - 2026-06-19
+### Security & Robustness
+- **Path Traversal & Symlink Escape Protection**: Implemented pure-lexical path normalization to validate symlink paths, preventing escape outside project boundaries and fixing Windows UNC path crashes.
+- **Binary Hijacking Prevention**: Enforced constraints on `.bin` symlink targets to prevent system utility overrides.
+- **Environment Variable Sanitization**: Cleared environment variables during script executions, retaining only critical system variables on Windows.
+- **OOM Protection**: Enforced a 50MB deserialization limit on lockfiles.
+- **Fallback Recovery**: Prevented process panic on corrupted lockfiles, falling back gracefully to clean dependency resolution.
+- **SHA-512 & deny-weak-hashes**: Migrated SHA-512 hash decoding to `base64` crate and added `deny-weak-hashes` option in `.npmrc` to reject weak hashes (e.g., SHA-1).
+- **Interprocess Locks**: Utilized `fd-lock` to serialize concurrent installation commands.
+
+### Added
+- **Hybrid Lockfile System**: Introduced readable `amae-lock.json` for Git tracking alongside local `amae-lock.bin` for fast startup.
+- **Automatic Lockfile Synchronization**: Automatically regenerates `amae-lock.bin` from `amae-lock.json` if `amae-lock.bin` is missing or outdated.
+- **Git Integration**: Excluded `amae-lock.bin` from git tracking in `.gitignore`.
+
 ---
 
 ## [0.10.4] - 2026-06-16

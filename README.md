@@ -12,7 +12,7 @@ npm copies files. amae doesn't.
 
 Every package you install goes into a global content-addressable store at `~/.amae/store`. When the same file is needed in ten different projects, it lives on disk once and is hard-linked into each `node_modules`. Installs after the first are near-instant because there's nothing to download or unpack — only links to create.
 
-The resolved dependency graph is serialized into a binary lockfile (`amae-lock.bin`) using [bincode](https://github.com/bincode-org/bincode). Reading it back is orders of magnitude faster than parsing JSON.
+The resolved dependency graph is stored using a hybrid system: a human-readable text lockfile (`amae-lock.json`) for Git tracking and merge-conflict resolution, and a local binary cache (`amae-lock.bin`) serialized using [bincode](https://github.com/bincode-org/bincode) for ultra-fast startup.
 
 ---
 
@@ -56,7 +56,7 @@ amae run build                   # Run a script from package.json
 amae test                        # Run the "test" script
 amae start                       # Run the "start" script
 amae list                        # List installed packages with resolved versions
-amae clean                       # Delete node_modules and lockfile
+amae clean                       # Delete node_modules and lockfiles
 amae prune                       # Clear the global ~/.amae/store cache
 ```
 
@@ -106,7 +106,7 @@ amae install
          in topological dependency order
 ```
 
-The lockfile (`amae-lock.bin`) captures the full resolved graph. On subsequent installs amae reads the binary lockfile directly — no network, no resolution, just linking.
+The dependency graph is saved to both `amae-lock.json` (tracked in Git) and `amae-lock.bin`. On subsequent runs, `amae` reads the binary lockfile directly for instant startup. If `amae-lock.json` is newer (e.g. after a `git pull`) or the binary is missing (e.g. after a clean `git clone`), the binary cache is automatically rebuilt from the JSON lockfile.
 
 ---
 
