@@ -26,6 +26,15 @@ memmap2 = "0.9"
 fd-lock = "4.0"
 base64 = "0.21"
 
+# Scripting & Runtimes
+mlua = { version = "0.9", features = ["lua54", "vendored"] }
+deno_core = "0.298"
+oxc_allocator = "0.13"
+oxc_parser = "0.13"
+oxc_span = "0.13"
+oxc_transformer = "0.13"
+oxc_codegen = "0.13"
+
 [profile.dev]
 opt-level = 0
 

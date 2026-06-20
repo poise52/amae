@@ -268,7 +268,7 @@ impl Linker {
         Ok(())
     }
 
-    fn run_package_lifecycle_scripts(&self, pkg: &ResolvedPackage) -> Result<(), String> {
+    async fn run_package_lifecycle_scripts(&self, pkg: &ResolvedPackage) -> Result<(), String> {
         let pkg_store_dir = if pkg.tarball_url.starts_with("workspace:") {
             PathBuf::from(&pkg.tarball_url["workspace:".len()..])
         } else {
@@ -350,7 +350,7 @@ impl Linker {
         Ok(())
     }
 
-    pub fn run_lifecycle_scripts(
+    pub async fn run_lifecycle_scripts(
         &self,
         resolved_graph: &HashMap<String, ResolvedPackage>,
         direct_deps: &[(String, String)],
@@ -358,7 +358,7 @@ impl Linker {
         let order = self.get_build_order(resolved_graph, direct_deps);
         for key in order {
             if let Some(pkg) = resolved_graph.get(&key) {
-                self.run_package_lifecycle_scripts(pkg)?;
+                self.run_package_lifecycle_scripts(pkg).await?;
             }
         }
 

@@ -2,6 +2,13 @@
 
 All notable changes to the `amae` package manager will be documented in this file.
 
+## [] - 2026-06-21
+### Added
+- **Lua Scripting Integration**: Integrated `mlua` to support reading configurations from `amae.config.lua` and executing custom `preinstall` and `postinstall` hooks.
+- **Embedded JS/TS V8 Runtime**: Integrated `deno_core` and the **Oxc** toolchain (`oxc_parser`, `oxc_transformer`, `oxc_codegen`) to transpile TypeScript on-the-fly and execute `.js`/`.ts` scripts natively via V8 inside `amae run`.
+
+---
+
 ## [0.10.5] - 2026-06-19
 ### Security & Robustness
 - **Path Traversal & Symlink Escape Protection**: Implemented pure-lexical path normalization to validate symlink paths, preventing escape outside project boundaries and fixing Windows UNC path crashes.

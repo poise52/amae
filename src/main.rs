@@ -6,6 +6,9 @@ mod linker;
 mod lock;
 mod npmrc;
 mod workspace;
+mod lua_engine;
+mod transpiler;
+mod js_runtime;
 
 use clap::{Parser, CommandFactory};
 use cli::{Cli, Commands};
@@ -121,6 +124,26 @@ fn collect_all_direct_deps(
 }
 
 async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: bool, ignore_scripts: bool, store_dir: Option<&str>) -> Result<(), String> {
+    let lua_engine = match lua_engine::LuaEngine::new() {
+        Ok(eng) => eng,
+        Err(e) => {
+            println!("{}", style(format!("Warning: Failed to initialize Lua engine: {}", e)).yellow());
+            lua_engine::LuaEngine::new().map_err(|e| format!("Fallback Lua engine failed: {}", e))?
+        }
+    };
+
+    let lua_config = match lua_engine.load_config(project_dir) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            println!("{}", style(format!("Warning: Failed to load Lua config: {}", e)).yellow());
+            lua_engine::LuaConfig::default()
+        }
+    };
+
+    if let Err(e) = lua_engine.run_preinstall_hook() {
+        println!("{}", style(format!("Warning: Preinstall hook failed: {}", e)).yellow());
+    }
+
     let lock_dir = project_dir.join("node_modules");
     std::fs::create_dir_all(&lock_dir).map_err(|e| format!("Failed to create node_modules directory: {}", e))?;
     let lock_file_path = lock_dir.join(".amae-install.lock");
@@ -134,7 +157,13 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
     let _lock_guard = lock.write().map_err(|e| format!("Failed to acquire install lock: {}", e))?;
 
     let pkg = PackageJson::read_from_dir(project_dir)?;
-    let npmrc = Arc::new(npmrc::Npmrc::load());
+    
+    let mut npmrc_val = npmrc::Npmrc::load();
+    if let Some(ref reg) = lua_config.registry {
+        npmrc_val.registry = reg.clone();
+    }
+    let npmrc = Arc::new(npmrc_val);
+    
     let workspace = Arc::new(workspace::Workspace::load(project_dir));
 
     let (direct_deps, all_direct_deps) = collect_all_direct_deps(&pkg, &workspace, production);
@@ -197,7 +226,10 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
 
     let cas = Arc::new(match store_dir {
         Some(dir) => cas::Cas::with_store_dir(std::path::PathBuf::from(dir)),
-        None => cas::Cas::new(),
+        None => match &lua_config.store_dir {
+            Some(dir) => cas::Cas::with_store_dir(dir.clone()),
+            None => cas::Cas::new(),
+        }
     });
     let client = Arc::new(create_http_client());
     let mut download_handles = Vec::new();
@@ -269,13 +301,40 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
 
     linker.link(&resolved_packages, &direct_resolved)?;
     if !ignore_scripts {
-        linker.run_lifecycle_scripts(&resolved_packages, &direct_resolved)?;
+        linker.run_lifecycle_scripts(&resolved_packages, &direct_resolved).await?;
     }
+
+    if let Err(e) = lua_engine.run_postinstall_hook() {
+        println!("{}", style(format!("Warning: Postinstall hook failed: {}", e)).yellow());
+    }
+
     println!("{}", style("Successfully installed dependencies.").green().bold());
     Ok(())
 }
 
+
+
 async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -> Result<(), String> {
+    let lua_engine = match lua_engine::LuaEngine::new() {
+        Ok(eng) => eng,
+        Err(e) => {
+            println!("{}", style(format!("Warning: Failed to initialize Lua engine: {}", e)).yellow());
+            lua_engine::LuaEngine::new().map_err(|e| format!("Fallback Lua engine failed: {}", e))?
+        }
+    };
+
+    let lua_config = match lua_engine.load_config(project_dir) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            println!("{}", style(format!("Warning: Failed to load Lua config: {}", e)).yellow());
+            lua_engine::LuaConfig::default()
+        }
+    };
+
+    if let Err(e) = lua_engine.run_preinstall_hook() {
+        println!("{}", style(format!("Warning: Preinstall hook failed: {}", e)).yellow());
+    }
+
     let lock_dir = project_dir.join("node_modules");
     std::fs::create_dir_all(&lock_dir).map_err(|e| format!("Failed to create node_modules directory: {}", e))?;
     let lock_file_path = lock_dir.join(".amae-install.lock");
@@ -289,7 +348,13 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
     let _lock_guard = lock.write().map_err(|e| format!("Failed to acquire install lock: {}", e))?;
 
     let pkg = PackageJson::read_from_dir(project_dir)?;
-    let npmrc = Arc::new(npmrc::Npmrc::load());
+    
+    let mut npmrc_val = npmrc::Npmrc::load();
+    if let Some(ref reg) = lua_config.registry {
+        npmrc_val.registry = reg.clone();
+    }
+    let npmrc = Arc::new(npmrc_val);
+    
     let workspace = Arc::new(workspace::Workspace::load(project_dir));
 
     let (direct_deps, all_direct_deps) = collect_all_direct_deps(&pkg, &workspace, false);
@@ -405,7 +470,10 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
             .progress_chars("██░")
     );
 
-    let cas = Arc::new(cas::Cas::new());
+    let cas = Arc::new(match &lua_config.store_dir {
+        Some(dir) => cas::Cas::with_store_dir(dir.clone()),
+        None => cas::Cas::new(),
+    });
     let client = Arc::new(create_http_client());
     let mut download_handles = Vec::new();
 
@@ -475,7 +543,12 @@ async fn handle_update(project_dir: &Path, package_to_update: &Option<String>) -
     }
 
     linker.link(&resolved_packages, &direct_resolved)?;
-    linker.run_lifecycle_scripts(&resolved_packages, &direct_resolved)?;
+    linker.run_lifecycle_scripts(&resolved_packages, &direct_resolved).await?;
+
+    if let Err(e) = lua_engine.run_postinstall_hook() {
+        println!("{}", style(format!("Warning: Postinstall hook failed: {}", e)).yellow());
+    }
+
     println!("{}", style("Successfully updated dependencies.").green().bold());
     Ok(())
 }
@@ -817,11 +890,42 @@ async fn handle_remove(project_dir: &Path, package_name: &str) -> Result<(), Str
 }
 
 async fn handle_run(project_dir: &Path, script_name: &str) -> Result<(), String> {
+    let direct_file_path = project_dir.join(script_name);
+    if (script_name.ends_with(".js") || script_name.ends_with(".ts")) && direct_file_path.exists() {
+        println!("> Running {} via embedded JS/TS engine", script_name);
+        return js_runtime::JsRuntimeEngine::run_file(&direct_file_path).await;
+    }
+
     let pkg = PackageJson::read_from_dir(project_dir)?;
-    let cmd_str = pkg.scripts.get(script_name)
-        .ok_or_else(|| format!("Script '{}' not found in package.json", script_name))?;
+    let cmd_str = match pkg.scripts.get(script_name) {
+        Some(cmd) => cmd,
+        None => {
+            if direct_file_path.exists() {
+                println!("> Running {} via embedded JS/TS engine", script_name);
+                return js_runtime::JsRuntimeEngine::run_file(&direct_file_path).await;
+            }
+            return Err(format!("Script '{}' not found in package.json and is not a valid file path", script_name));
+        }
+    };
 
     println!("> {}", style(cmd_str).dim());
+
+    let cmd_trimmed = cmd_str.trim();
+    let parts: Vec<&str> = cmd_trimmed.split_whitespace().collect();
+    if parts.len() >= 2 && (parts[0] == "node" || parts[0] == "ts-node" || parts[0] == "bun" || parts[0] == "tsx" || parts[0] == "deno") {
+        let file_arg = parts[1];
+        let js_ts_path = project_dir.join(file_arg);
+        if (file_arg.ends_with(".js") || file_arg.ends_with(".ts")) && js_ts_path.exists() {
+            println!("> Intercepted: running {} via embedded JS/TS engine", file_arg);
+            return js_runtime::JsRuntimeEngine::run_file(&js_ts_path).await;
+        }
+    } else {
+        let js_ts_path = project_dir.join(cmd_trimmed);
+        if (cmd_trimmed.ends_with(".js") || cmd_trimmed.ends_with(".ts")) && js_ts_path.exists() {
+            println!("> Intercepted: running {} via embedded JS/TS engine", cmd_trimmed);
+            return js_runtime::JsRuntimeEngine::run_file(&js_ts_path).await;
+        }
+    }
 
     let local_bin = project_dir.join("node_modules").join(".bin");
     let mut path_val = std::env::var_os("PATH").unwrap_or_default();
