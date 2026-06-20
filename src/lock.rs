@@ -28,6 +28,7 @@ impl Lockfile {
         use bincode::Options;
         bincode::options()
             .with_limit(50 * 1024 * 1024)
+            .allow_trailing_bytes()
             .deserialize(&mmap)
             .map_err(|e| format!("Failed to deserialize lockfile: {}", e))
     }
@@ -38,6 +39,7 @@ impl Lockfile {
         use bincode::Options;
         bincode::options()
             .with_limit(50 * 1024 * 1024)
+            .allow_trailing_bytes()
             .serialize_into(&mut writer, self)
             .map_err(|e| format!("Failed to serialize lockfile: {}", e))?;
         use std::io::Write;
@@ -46,7 +48,7 @@ impl Lockfile {
 
     pub fn read_from_json<P: AsRef<Path>>(path: P) -> Result<Self, String> {
         let metadata = std::fs::metadata(&path).map_err(|e| format!("Failed to get JSON lockfile metadata: {}", e))?;
-        if metadata.len() > 100 * 1024 * 1024 { // 100MB limit
+        if metadata.len() > 100 * 1024 * 1024 {
             return Err("JSON lockfile exceeds size limit of 100MB".to_string());
         }
         let file = File::open(path).map_err(|e| format!("Failed to open JSON lockfile: {}", e))?;
@@ -104,6 +106,11 @@ mod test_hybrid {
         let temp_json = "scratch/test-workspace/amae-lock-temp.json";
 
         lockfile.write_to_file(temp_bin).unwrap();
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new().append(true).open(temp_bin).unwrap();
+            file.write_all(b"SOME EXTRA BYTES AT THE END").unwrap();
+        }
         let loaded_bin = Lockfile::read_from_file(temp_bin).unwrap();
         assert_eq!(loaded_bin.version, lockfile.version);
         assert_eq!(loaded_bin.direct_dependencies, lockfile.direct_dependencies);

@@ -7,6 +7,7 @@ mod lock;
 mod npmrc;
 mod workspace;
 mod lua_engine;
+#[cfg(feature = "js_runtime")]
 mod transpiler;
 mod js_runtime;
 
@@ -174,14 +175,22 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
     let lock_json = project_dir.join("amae-lock.json");
     let mut lockfile_read_res = None;
     if lock_bin.exists() || lock_json.exists() {
-        println!("{}", style("Found lockfile. Reading dependencies...").cyan());
         match load_lockfile(project_dir) {
-            Ok(lf) => { lockfile_read_res = Some(lf); }
+            Ok(lf) => {
+                println!("{}", style(format!(
+                    "Found lockfile: {} direct deps, {} packages total",
+                    lf.direct_dependencies.len(),
+                    lf.packages.len()
+                )).cyan());
+                lockfile_read_res = Some(lf);
+            }
             Err(e) => {
                 println!("{}", style(format!("Warning: Failed to read lockfile: {}. Re-resolving all dependencies...", e)).yellow());
             }
         }
     }
+
+    let resolve_start = std::time::Instant::now();
 
     if let Some(lockfile) = lockfile_read_res {
         let mut match_ok = true;
@@ -213,9 +222,13 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
         save_lockfile(project_dir, &lockfile)?;
     }
 
+    let resolve_elapsed = resolve_start.elapsed();
+
     let external_packages: Vec<&resolver::ResolvedPackage> = resolved_packages.values()
         .filter(|pkg| !pkg.tarball_url.starts_with("workspace:"))
         .collect();
+
+    let download_start = std::time::Instant::now();
 
     let pb = ProgressBar::new(external_packages.len() as u64);
     pb.set_style(
@@ -269,6 +282,8 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
     }
     pb.finish_and_clear();
 
+    let download_elapsed = download_start.elapsed();
+
     if !failed_optional_packages.is_empty() {
         resolved_packages.retain(|key, _| !failed_optional_packages.contains(key));
         for pkg in resolved_packages.values_mut() {
@@ -280,6 +295,7 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
     }
 
     println!("{}", style("Linking dependencies...").cyan().bold());
+    let link_start = std::time::Instant::now();
     let linker = Linker::new(project_dir, workspace.clone(), store_dir.map(std::path::PathBuf::from));
     linker.prepare()?;
 
@@ -300,6 +316,8 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
     }
 
     linker.link(&resolved_packages, &direct_resolved)?;
+    let link_elapsed = link_start.elapsed();
+
     if !ignore_scripts {
         linker.run_lifecycle_scripts(&resolved_packages, &direct_resolved).await?;
     }
@@ -308,7 +326,15 @@ async fn handle_install(project_dir: &Path, frozen_lockfile: bool, production: b
         println!("{}", style(format!("Warning: Postinstall hook failed: {}", e)).yellow());
     }
 
-    println!("{}", style("Successfully installed dependencies.").green().bold());
+    let total_elapsed = resolve_start.elapsed();
+    println!("{}", style(format!(
+        "Successfully installed {} packages in {:.2}s (resolve: {:.2}s, download: {:.2}s, link: {:.2}s)",
+        resolved_packages.len(),
+        total_elapsed.as_secs_f64(),
+        resolve_elapsed.as_secs_f64(),
+        download_elapsed.as_secs_f64(),
+        link_elapsed.as_secs_f64()
+    )).green().bold());
     Ok(())
 }
 

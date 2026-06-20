@@ -78,16 +78,6 @@ impl Linker {
                 
                 validate_safe_path(project_root, &dep_symlink_path)?;
 
-                if let Some(parent) = dep_symlink_path.parent() {
-                    fs::create_dir_all(parent)
-                        .map_err(|e| format!("Failed to create parent directory for symlink: {}", e))?;
-                }
-
-                if dep_symlink_path.exists() || dep_symlink_path.is_symlink() {
-                    let _ = fs::remove_file(&dep_symlink_path);
-                    let _ = fs::remove_dir_all(&dep_symlink_path);
-                }
-
                 let target_path = if let Some(dep_pkg) = resolved_graph.get(&format!("{}@{}", dep_name, dep_version)) {
                     if dep_pkg.tarball_url.starts_with("workspace:") {
                         PathBuf::from(&dep_pkg.tarball_url["workspace:".len()..])
@@ -103,6 +93,20 @@ impl Linker {
                 let relative_target = get_relative_path(dep_symlink_path.parent().unwrap(), &target_path)
                     .ok_or_else(|| format!("Could not compute relative path from {} to {}", dep_symlink_path.parent().unwrap().display(), target_path.display()))?;
 
+                if symlink_is_valid(&dep_symlink_path, &relative_target) {
+                    continue;
+                }
+
+                if let Some(parent) = dep_symlink_path.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|e| format!("Failed to create parent directory for symlink: {}", e))?;
+                }
+
+                if dep_symlink_path.exists() || dep_symlink_path.is_symlink() {
+                    let _ = fs::remove_file(&dep_symlink_path);
+                    let _ = fs::remove_dir_all(&dep_symlink_path);
+                }
+
                 create_symlink(&relative_target, &dep_symlink_path)
                     .map_err(|e| format!("Failed to create symlink for dependency {} -> {}: {}", dep_name, relative_target.display(), e))?;
             }
@@ -112,16 +116,6 @@ impl Linker {
             let symlink_path = self.node_modules_dir.join(name);
 
             validate_safe_path(&self.node_modules_dir, &symlink_path)?;
-
-            if let Some(parent) = symlink_path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create parent for direct symlink: {}", e))?;
-            }
-
-            if symlink_path.exists() || symlink_path.is_symlink() {
-                let _ = fs::remove_file(&symlink_path);
-                let _ = fs::remove_dir_all(&symlink_path);
-            }
 
             let target_path = if let Some(dep_pkg) = resolved_graph.get(&format!("{}@{}", name, version)) {
                 if dep_pkg.tarball_url.starts_with("workspace:") {
@@ -137,6 +131,20 @@ impl Linker {
 
             let relative_target = get_relative_path(symlink_path.parent().unwrap(), &target_path)
                 .ok_or_else(|| format!("Could not compute relative path from {} to {}", symlink_path.parent().unwrap().display(), target_path.display()))?;
+
+            if symlink_is_valid(&symlink_path, &relative_target) {
+                continue;
+            }
+
+            if let Some(parent) = symlink_path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create parent for direct symlink: {}", e))?;
+            }
+
+            if symlink_path.exists() || symlink_path.is_symlink() {
+                let _ = fs::remove_file(&symlink_path);
+                let _ = fs::remove_dir_all(&symlink_path);
+            }
 
             create_symlink(&relative_target, &symlink_path)
                 .map_err(|e| format!("Failed to create direct symlink for {}: {}", name, e))?;
@@ -208,16 +216,20 @@ impl Linker {
                     
                     validate_safe_path(&bin_dir, &symlink_path)?;
 
-                    if symlink_path.exists() || symlink_path.is_symlink() {
-                        let _ = fs::remove_file(&symlink_path);
-                    }
-
                     let target_path = dep_store_dir.join(&bin_rel_path);
 
                     validate_safe_path(&dep_store_dir, &target_path)?;
 
                     let relative_target = get_relative_path(&bin_dir, &target_path)
                         .ok_or_else(|| format!("Could not compute relative path from {} to {}", bin_dir.display(), target_path.display()))?;
+
+                    if symlink_is_valid(&symlink_path, &relative_target) {
+                        continue;
+                    }
+
+                    if symlink_path.exists() || symlink_path.is_symlink() {
+                        let _ = fs::remove_file(&symlink_path);
+                    }
 
                     create_symlink(&relative_target, &symlink_path)
                         .map_err(|e| format!("Failed to create bin symlink for {}: {}", cmd_name, e))?;
@@ -500,6 +512,13 @@ fn create_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
         } else {
             Ok(())
         }
+    }
+}
+
+fn symlink_is_valid(link_path: &Path, expected_target: &Path) -> bool {
+    match fs::read_link(link_path) {
+        Ok(current_target) => current_target == expected_target,
+        Err(_) => false,
     }
 }
 

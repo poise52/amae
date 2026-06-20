@@ -1,14 +1,21 @@
+#[cfg(feature = "js_runtime")]
 use std::path::Path;
+#[cfg(feature = "js_runtime")]
 use std::rc::Rc;
+#[cfg(feature = "js_runtime")]
 use deno_core::{
     ModuleLoader, ModuleSpecifier, ModuleSource, ModuleType, ModuleLoadResponse,
     ResolutionKind, JsRuntime, RuntimeOptions, RequestedModuleType
 };
+#[cfg(feature = "js_runtime")]
 use deno_core::error::AnyError;
+#[cfg(feature = "js_runtime")]
 use futures_util::FutureExt;
 
+#[cfg(feature = "js_runtime")]
 pub struct TsModuleLoader;
 
+#[cfg(feature = "js_runtime")]
 impl ModuleLoader for TsModuleLoader {
     fn resolve(
         &self,
@@ -57,8 +64,10 @@ impl ModuleLoader for TsModuleLoader {
     }
 }
 
+#[cfg(feature = "js_runtime")]
 pub struct JsRuntimeEngine;
 
+#[cfg(feature = "js_runtime")]
 impl JsRuntimeEngine {
     pub async fn run_file(path: &Path) -> Result<(), String> {
         let specifier = ModuleSpecifier::from_file_path(path)
@@ -80,5 +89,21 @@ impl JsRuntimeEngine {
         evaluation.await.map_err(|e| format!("JS module evaluation failed: {}", e))?;
 
         Ok(())
+    }
+}
+
+#[cfg(not(feature = "js_runtime"))]
+use std::path::Path;
+
+#[cfg(not(feature = "js_runtime"))]
+pub struct JsRuntimeEngine;
+
+#[cfg(not(feature = "js_runtime"))]
+impl JsRuntimeEngine {
+    pub async fn run_file(path: &Path) -> Result<(), String> {
+        Err(format!(
+            "JavaScript/TypeScript runtime is not enabled in this build of amae (cannot run {})",
+            path.display()
+        ))
     }
 }

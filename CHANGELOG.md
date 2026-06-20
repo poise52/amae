@@ -2,10 +2,21 @@
 
 All notable changes to the `amae` package manager will be documented in this file.
 
-## [] - 2026-06-21
+## [0.11.1] - 2026-06-21
 ### Added
 - **Lua Scripting Integration**: Integrated `mlua` to support reading configurations from `amae.config.lua` and executing custom `preinstall` and `postinstall` hooks.
 - **Embedded JS/TS V8 Runtime**: Integrated `deno_core` and the **Oxc** toolchain (`oxc_parser`, `oxc_transformer`, `oxc_codegen`) to transpile TypeScript on-the-fly and execute `.js`/`.ts` scripts natively via V8 inside `amae run`.
+
+### Performance
+- **Fixed critical lockfile deserialization bug**: `bincode` now uses `.allow_trailing_bytes()`, preventing every warm install from falling back to full network re-resolution. Repeat install drops from ~16s to <300ms.
+- **Symlink diffing in linker**: Linker now checks existing symlinks via `fs::read_link()` and skips recreation if already correct. Eliminates thousands of redundant FS operations on repeat installs — `with warm modules` drops from ~30s to <300ms.
+- **Hardware-accelerated hashing**: Enabled `asm` feature for `sha-1` and `sha2` crates, activating native SHA-NI instructions on Apple Silicon and x86.
+- **Faster archive decompression**: Switched `flate2` backend from `miniz_oxide` to `zlib-rs` for faster `.tar.gz` extraction.
+- **Release profile optimization**: Added `[profile.release]` with `lto = true`, `codegen-units = 1`, `panic = "abort"` for smaller, faster production binaries.
+
+### CLI / UX
+- **Granular install timings**: Final output now shows per-phase timing: `Successfully installed 1281 packages in 0.34s (resolve: 0.00s, download: 0.12s, link: 0.22s)`.
+- **Lockfile stats on read**: When a valid lockfile is found, prints `Found lockfile: 86 direct deps, 1281 packages total`.
 
 ---
 

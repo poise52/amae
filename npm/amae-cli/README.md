@@ -12,7 +12,7 @@ npm copies files. amae doesn't.
 
 Every package you install goes into a global content-addressable store at `~/.amae/store`. When the same file is needed in ten different projects, it lives on disk once and is hard-linked into each `node_modules`. Installs after the first are near-instant because there's nothing to download or unpack — only links to create.
 
-The resolved dependency graph is serialized into a binary lockfile (`amae-lock.bin`) using [bincode](https://github.com/bincode-org/bincode). Reading it back is orders of magnitude faster than parsing JSON.
+The resolved dependency graph is stored using a hybrid system: a human-readable text lockfile (`amae-lock.json`) for Git tracking and merge-conflict resolution, and a local binary cache (`amae-lock.bin`) serialized using [bincode](https://github.com/bincode-org/bincode) for ultra-fast startup.
 
 ---
 
@@ -39,16 +39,25 @@ Prebuilt native binaries ship for:
 ## Usage
 
 ```sh
-amae install          # Install all dependencies from package.json
-amae add axios        # Add a package and install
-amae add -D vitest    # Add a dev dependency
-amae remove axios     # Remove a package and reinstall
-amae run build        # Run a script from package.json
-amae test             # Run the "test" script
-amae start            # Run the "start" script
-amae list             # List installed packages with resolved versions
-amae clean            # Delete node_modules and lockfile
-amae prune            # Clear the global ~/.amae/store cache
+amae --version                   # Show amae version
+amae install                     # Install all dependencies from package.json
+amae install --frozen-lockfile   # Fail if lockfile is out of sync or missing (CI)
+amae install --production        # Skip devDependencies (production builds)
+amae install --store-dir=./cache # Use a custom local store instead of ~/.amae/store
+amae add axios                   # Add a package and install
+amae add -D vitest               # Add a dev dependency
+amae remove axios                # Remove a package and reinstall
+amae update                      # Update all dependencies to their latest versions (semver)
+amae update axios                # Update a specific package and its transitives
+amae outdated                    # List dependencies that are out of date
+amae why axios                   # Traces and prints why a package is installed
+amae completions zsh             # Generate shell completion scripts (bash/zsh/fish...)
+amae run build                   # Run a script from package.json
+amae test                        # Run the "test" script
+amae start                       # Run the "start" script
+amae list                        # List installed packages with resolved versions
+amae clean                       # Delete node_modules and lockfiles
+amae prune                       # Clear the global ~/.amae/store cache
 ```
 
 ---
@@ -75,6 +84,40 @@ amae install
 
 ---
 
+## Scripting & Configuration (Lua & JavaScript/TypeScript)
+
+`amae` integrates powerful, native scripting engines to allow fully customizable configurations, execution hooks, and fast scripting.
+
+### 1. Lua Integration (`amae.config.lua`)
+You can define project-scoped settings and execute custom lifecycle hooks using Lua. `amae` embeds the Lua runtime (`mlua`) directly into the binary.
+
+```lua
+-- amae.config.lua
+return {
+  registry = "https://registry.npmjs.org/",
+  deny_weak_hashes = true,
+
+  -- Custom lifecycle hooks
+  preinstall = function()
+    print("Preparing project environment in Lua...")
+  end,
+  postinstall = function()
+    print("Install complete! Doing cleanup...")
+  end
+}
+```
+
+### 2. Embedded JS/TS V8 Runtime (`amae run`)
+`amae` features an embedded V8 JavaScript runtime (`deno_core`) and a blazing-fast TypeScript parser/transpiler (**Oxc**).
+You can run `.js` and `.ts` scripts directly using `amae run`:
+
+```sh
+# Transpiles and executes TS natively using embedded V8, bypassing Node.js startup times
+amae run script.ts
+```
+
+---
+
 ## How it works
 
 ```
@@ -97,17 +140,20 @@ amae install
          in topological dependency order
 ```
 
-The lockfile (`amae-lock.bin`) captures the full resolved graph. On subsequent installs amae reads the binary lockfile directly — no network, no resolution, just linking.
+The dependency graph is saved to both `amae-lock.json` (tracked in Git) and `amae-lock.bin`. On subsequent runs, `amae` reads the binary lockfile directly for instant startup. If `amae-lock.json` is newer (e.g. after a `git pull`) or the binary is missing (e.g. after a clean `git clone`), the binary cache is automatically rebuilt from the JSON lockfile.
 
 ---
 
 ## .npmrc
 
-amae reads both local `.npmrc` and `~/.npmrc`. Private registries and auth tokens work out of the box:
+amae reads both local `.npmrc` and `~/.npmrc`. Private registries, scoped registries, and auth tokens work out of the box:
 
 ```ini
 registry=https://registry.npmjs.org/
 //registry.npmjs.org/:_authToken=your_token_here
+
+# Scoped registry for @mycompany packages
+@mycompany:registry=https://npm.mycompany.com/
 ```
 
 ---

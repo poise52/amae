@@ -31,7 +31,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "amae"
-version = "0.10.5"
+version = "0.11.1"
 dependencies = [
  "base64",
  "bincode",
@@ -696,8 +696,8 @@ version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
- "crc32fast",
  "miniz_oxide 0.8.9",
+ "zlib-rs",
 ]
 
 [[package]]
@@ -2259,6 +2259,16 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
+ "sha1-asm",
+]
+
+[[package]]
+name = "sha1-asm"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "286acebaf8b67c1130aedffad26f594eff0c1292389158135327d2e23aed582b"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -2270,6 +2280,16 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
+ "sha2-asm",
+]
+
+[[package]]
+name = "sha2-asm"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b845214d6175804686b2bd482bcffe96651bb2d1200742b712003504a2dac1ab"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -3344,6 +3364,12 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "zlib-rs"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3be3d40e40a133f9c916ee3f9f4fa2d9d63435b5fbe1bfc6d9dae0aa0ada1513"
 
 [[package]]
 name = "zmij"

@@ -1,10 +1,17 @@
+#[cfg(feature = "js_runtime")]
 use std::path::Path;
+#[cfg(feature = "js_runtime")]
 use oxc_allocator::Allocator;
+#[cfg(feature = "js_runtime")]
 use oxc_parser::Parser;
+#[cfg(feature = "js_runtime")]
 use oxc_span::SourceType;
+#[cfg(feature = "js_runtime")]
 use oxc_transformer::{Transformer, TransformOptions};
+#[cfg(feature = "js_runtime")]
 use oxc_codegen::{Codegen, CodegenOptions};
 
+#[cfg(feature = "js_runtime")]
 pub fn transpile_ts_to_js(source: &str, file_path: &Path) -> Result<String, String> {
     let allocator = Allocator::default();
     

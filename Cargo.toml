@@ -1,6 +1,6 @@
 [package]
 name = "amae"
-version = "0.10.5"
+version = "0.11.1"
 edition = "2024"
 
 [dependencies]
@@ -11,10 +11,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 semver = "1.0"
 tar = "0.4"
-flate2 = "1.0"
+flate2 = { version = "1.0", default-features = false, features = ["zlib-rs"] }
 bincode = "1.3"
-sha-1 = "0.10"
-sha2 = "0.10"
 futures-util = "0.3"
 directories = "5.0"
 tempfile = "3.8"
@@ -28,15 +26,41 @@ base64 = "0.21"
 
 # Scripting & Runtimes
 mlua = { version = "0.9", features = ["lua54", "vendored"] }
-deno_core = "0.298"
-oxc_allocator = "0.13"
-oxc_parser = "0.13"
-oxc_span = "0.13"
-oxc_transformer = "0.13"
-oxc_codegen = "0.13"
+
+deno_core = { version = "0.298", optional = true }
+oxc_allocator = { version = "0.13", optional = true }
+oxc_parser = { version = "0.13", optional = true }
+oxc_span = { version = "0.13", optional = true }
+oxc_transformer = { version = "0.13", optional = true }
+oxc_codegen = { version = "0.13", optional = true }
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+sha-1 = { version = "0.10", features = ["asm"] }
+sha2 = { version = "0.10", features = ["asm"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+sha-1 = { version = "0.10" }
+sha2 = { version = "0.10" }
+
+[features]
+default = ["js_runtime"]
+js_runtime = [
+    "dep:deno_core",
+    "dep:oxc_allocator",
+    "dep:oxc_parser",
+    "dep:oxc_span",
+    "dep:oxc_transformer",
+    "dep:oxc_codegen"
+]
 
 [profile.dev]
 opt-level = 0
 
 [profile.dev.package."*"]
 opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
