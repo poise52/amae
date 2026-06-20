@@ -197,6 +197,13 @@ impl Resolver {
                     if !normalized.is_empty() && !normalized.ends_with(',') {
                         normalized.push(',');
                     }
+                    if part.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+                        let dot_count = part.split('.').count();
+                        let has_wildcard = part.contains('x') || part.contains('X') || part.contains('*');
+                        if dot_count == 3 && !has_wildcard {
+                            normalized.push('=');
+                        }
+                    }
                     normalized.push_str(part);
                     i += 1;
                 }
@@ -518,5 +525,21 @@ mod tests {
             Resolver::parse_alias("react-is", "^18.0.0"),
             ("react-is".to_string(), "^18.0.0".to_string())
         );
+    }
+
+    #[test]
+    fn test_matches_range() {
+        use semver::Version;
+        let empty_tags = BTreeMap::new();
+        let ver_1_1_2 = Version::parse("1.1.2").unwrap();
+        let ver_1_0_3 = Version::parse("1.0.3").unwrap();
+
+        // Exact version match should be strict
+        assert!(!Resolver::matches_range(&ver_1_1_2, "1.0.3", &empty_tags));
+        assert!(Resolver::matches_range(&ver_1_0_3, "1.0.3", &empty_tags));
+
+        // Caret version match should be loose
+        assert!(Resolver::matches_range(&ver_1_1_2, "^1.0.3", &empty_tags));
+        assert!(Resolver::matches_range(&ver_1_0_3, "^1.0.3", &empty_tags));
     }
 }

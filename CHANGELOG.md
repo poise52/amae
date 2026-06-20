@@ -2,6 +2,13 @@
 
 All notable changes to the `amae` package manager will be documented in this file.
 
+## [0.11.2] - 2026-06-21
+### Fixed
+- **Strict Dependency Resolution**: Enforced strict equality requirements for pinned exact version strings (e.g. `1.0.3`). Pinned dependencies will no longer be incorrectly resolved to caret ranges during package index checks (e.g. `rolldown: "1.0.3"` will no longer resolve to `1.1.2`, resolving Vite runtime errors).
+- **CI Build Fixes**:
+  - Disabled the `asm` feature for `sha-1` and `sha2` crates on Windows MSVC builds to resolve compiler incompatibilities.
+  - Made the JavaScript/TypeScript scripting runtime (`deno_core` and `oxc`) optional via a `js_runtime` feature and disabled it for Linux Musl (`musl` targets) to allow compiling successfully on Alpine Linux without prebuilt `rusty_v8` static libraries.
+
 ## [0.11.1] - 2026-06-21
 ### Added
 - **Lua Scripting Integration**: Integrated `mlua` to support reading configurations from `amae.config.lua` and executing custom `preinstall` and `postinstall` hooks.
